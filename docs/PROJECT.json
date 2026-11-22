@@ -1,0 +1,16 @@
+{
+  "name": "SOLINAESQUE",
+  "title": "Solinaesque",
+  "description": "A paraphonic divide-down string machine with 16'/8'/4' registers, a shared filter and envelope, ensemble chorus, flanger, delay, arpeggiator and chord memory.",
+  "kind": "synth",
+  "version": "0.1",
+  "authors": "R. Luke DuBois",
+  "year": 2026,
+  "app_id": "0x1D39CD8E",
+  "features": {
+    "trs_midi": true,
+    "ci": true,
+    "graphify": true
+  },
+  "made": "2026-11-21"
+}
