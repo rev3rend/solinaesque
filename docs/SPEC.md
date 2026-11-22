@@ -27,20 +27,19 @@ printed buttons; KNOB 1..4 always edit the four parameters of the page on screen
 | SCL | press | FILTER page: cutoff, resonance, envelope amount, key tracking |
 | ENV | press | ENVELOPE page: attack, decay, sustain, release |
 | LFO | press | LFO page: rate, vibrato depth, PWM depth, delay (fade-in) |
-| FX | press; press again | FX 1 page (ensemble depth, ensemble rate, flanger amount, flanger rate); FX 2 page (delay time, delay feedback, delay mix, delay tone) |
+| FX | press; press again | FX 1 page (ensemble depth, ensemble rate, flanger amount, flanger rate); pressed on FX 1: FX 2 page (delay time, delay feedback, delay mix, delay tone); pressed on FX 2: back to FX 1 |
 | GLO | press | GLOBAL page: trigger mode (retrig / legato), master tune, MIDI channel, volume |
 | ARP | press | Arpeggiator on / off |
 | ARP | hold (≥ 0.5 s) | ARP page: mode (up, down, up-down, random, as played), rate (divisions of the tempo), octaves 1..4, gate |
 | SEQ | press | Hold (latch) on / off: released keys keep sounding until hold is turned off or a new chord is played |
 | REC | press, play keys, press REC again | Chord memory: the held keys become the chord; then each key plays the chord transposed to it. REC held ≥ 0.5 s clears the chord. Up to 8 chords stored; the chord slot is picked on the ARP page's second view (v1: one chord, see open questions) |
 | PLAY | press | Arp clock: runs on the internal tempo, or follows MIDI clock when it is present; PLAY starts / stops a latched arp |
-| SAVE | press | Opens SAVE: PRESETS picks the user slot (U01..U32), SAVE again stores, any other button cancels |
-| SELECT | turn | Next / previous page (STRINGS, FILTER, ENVELOPE, LFO, FX 1, FX 2, ARP, GLOBAL) |
-| SELECT | press | Back to HOME |
+| SAVE | press | Opens SAVE: PRESETS picks the user slot (U01..U32; starts at the current user slot, or U01 from a factory sound), SAVE again stores the sound under its current name (and the settings), any other button cancels; the keys keep playing |
+| SELECT | turn | Next / previous page (STRINGS, FILTER, ENVELOPE, LFO, FX 1, FX 2, ARP, GLOBAL); from HOME, clockwise opens the first, counter-clockwise the last. (The encoders have no push switch: HOME is the way back.) |
 | ALGORITHM | turn | Ensemble type: OFF, I (subtle), II (classic three-phase), III (deep), FLANGE (flanger only) |
-| PRESETS | turn | Browse sounds: F1..F8 (factory), U01..U32 (user); loads on turn |
+| PRESETS | turn | Browse sounds: F1..F8 (factory), U01..U32 (user); loads on turn. With ARP held: the arp tempo. On the SAVE screen: the target slot |
 | KNOB 1..4 | turn | The four parameters of the current page (on HOME: 16', 8', 4', cutoff) |
-| MASTER pot | turn | Output level (platform) |
+| MASTER pot | turn | Output level, with VOLUME (read by the app every 4 frames, smoothed, a small dead band) |
 
 ## Screens
 
@@ -81,7 +80,8 @@ the panel of a 1970s string machine. Every screen is drawn lazily (a signature p
   does the shaping.
 - **Shared filter:** one resonant low-pass (state-variable, 12 dB/oct) on the summed notes: cutoff 20 Hz..16 kHz,
   resonance 0..100 %, envelope amount −100..+100 %, key tracking 0..100 % (from the highest sounding note).
-- **Shared envelope:** ADSR, attack 1 ms..5 s, decay 5 ms..5 s, sustain 0..100 %, release 5 ms..10 s; drives the
+- **Shared envelope:** ADSR, attack 1 ms..5 s (linear), decay 5 ms..5 s, sustain 0..100 %, release 5 ms..10 s
+  (decay and release exponential: the time shown is where the sound is ~52 dB down, it ends in exact silence at ~1.4x); drives the
   amplitude and (by the amount) the filter. Trigger mode RETRIG restarts the attack on every new key (from the
   current level, no jump); LEGATO triggers on the first key only. Releases when no key, hold or sustain pedal keeps
   a note.
@@ -93,7 +93,10 @@ the panel of a 1970s string machine. Every screen is drawn lazily (a signature p
   feedback path). The delay uses about 176 KB of pool for 1 s stereo; the ensemble and flanger a few KB.
 - **Level:** a soft limiter on the output so full chords at full registers do not clip.
 - **Ceiling:** the number of sounding notes is limited by the audio ISR budget (measured; the target is at least 32
-  notes × 3 registers, the oldest releasing notes are dropped first).
+  notes × 3 registers, the oldest releasing notes are dropped first). The skeleton renders at most 32 notes per block,
+  lowest first.
+- **Level:** one register at 100 % peaks at 5000 (Q15) before VOLUME and MASTER; F1 CLASSIC's single note is about
+  −18 dBFS at the default VOLUME, a big chord runs into the soft knee (above 20000) and the ceiling.
 
 ## Timing and sequencing
 
@@ -111,13 +114,14 @@ In the platform store (36 records of 4 KB) under this app's id:
 
 | Record | Contents |
 | --- | --- |
-| Settings | Global page (trigger mode, master tune, MIDI channel, volume), TRS MIDI on/off, the last preset, octave shift, ensemble type, arp settings and tempo, the 8 stored chords |
-| User presets 1 | U01..U16 (a preset is every sound parameter of the pages plus a 10-character name, about 64 bytes) |
+| Settings | Global page (trigger mode, master tune, MIDI channel, volume), TRS MIDI on/off, the last saved preset (loaded at power-on), octave shift, arp settings and tempo, the 8 stored chords |
+| User presets 1 | U01..U16 (a preset is every sound parameter of the pages and the ensemble type, plus an 11-character name: 40 bytes) |
 | User presets 2 | U17..U32 |
 
 Factory sounds F1..F8 are built in (read-only): e.g. CLASSIC, CELLO, VIOLINS, FULL ENS, DARK PAD, BRIGHT, SWELL,
 SPACE. A preset loads the sound; SAVE stores the current sound to a user slot. Damaged or foreign records fall back
-to the defaults.
+to the defaults. The settings record is written on every SAVE and when the GLOBAL or ARP page is left after a change
+(never on a knob turn: flash wear). Each record starts with a version and a payload size (append only).
 
 ## MIDI
 
@@ -137,6 +141,8 @@ to the defaults.
 - Whether the brass/organ "second section" of an ARP Omni style instrument is wanted later.
 - The factory sounds' exact values (tuned by ear in the emulator).
 - The CC map's numbers.
+- Naming user presets (v1 keeps the name of the sound that was saved: a name editor on the keys?).
+- The MASTER pot's real range on the unit (the app reads 0..1023 as silent..full).
 
 ## Out of scope for v1
 
@@ -147,11 +153,12 @@ to the defaults.
 
 ## Milestones
 
-1. **Skeleton:** every control from the table wired to a visible effect, all screens drawn, the settings and user
-   preset records with defaults, one divide-down note path (8' saw) through the shared envelope with keys and MIDI
-   in, note-off rules and `app_audio_stop`; features not built say `SOON`.
-2. **Divide-down bank:** all 12 top-octave oscillators, every note sounding, key gates, 16' / 8' / 4' registers,
-   shape morph, the voice ceiling measured.
+1. **Skeleton (done, 0.1):** every control from the table wired to a visible effect, all screens drawn, the settings
+   and user preset records with defaults, the divide-down bank with naive saws in all three registers through the
+   shared ADSR (RETRIG / LEGATO), HOLD, MIDI notes on a channel, sustain pedal, all notes off, note-off rules and
+   `app_audio_stop`; SHAPE, FILTER, LFO, FX, ARP, PLAY and REC say `SOON`.
+2. **Divide-down bank:** band-limited saws (PolyBLEP or equivalent), shape morph, the voice ceiling measured on the
+   unit (`audio_cpu_q8`) and the oldest releasing notes dropped first.
 3. **Shared filter and envelope:** the state-variable filter, ADSR with RETRIG / LEGATO, key tracking, the limiter.
 4. **LFO and MIDI in completed:** vibrato, PWM, delay; pitch bend, mod wheel, sustain, the CC map.
 5. **Ensemble:** the three-phase chorus and its types on ALGORITHM.

@@ -10,15 +10,27 @@
 const { chromium } = require('playwright');
 const fs = require('fs');
 const [url, out = 'build/emu_shots'] = process.argv.slice(2);
-const STEPS = [
-  ['shot', 'boot'],
-  ['knob', 'KNOB 1', 3],
-  ['knob', 'KNOB 4', -2],
-  ['shot', 'knobs'],
-  ['button', 'PLAY', 600],
-  ['key', 'z', 600],
+const STEPS = [                                         // Solinaesque: HOME, a chord, the pages, SAVE
+  ['shot', 'home'],
+  ['knob', 'KNOB 3', 20],
+  ['shot', 'home-4ft'],
+  ['button', 'SEQ', 200],                                // HOLD on: the chord keeps sounding
+  ['key', 'z', 300], ['key', 'c', 300], ['key', 'b', 300],
   ['wait', 300],
-  ['shot', 'after'],
+  ['shot', 'held-chord'],
+  ['button', 'EDIT', 200], ['shot', 'strings'],
+  ['button', 'SCL', 200], ['shot', 'filter'],
+  ['button', 'ENV', 200], ['knob', 'KNOB 1', -10], ['shot', 'envelope'],
+  ['button', 'LFO', 200], ['shot', 'lfo'],
+  ['button', 'FX', 200], ['shot', 'fx1'],
+  ['button', 'FX', 200], ['shot', 'fx2'],
+  ['button', 'ARP', 700], ['shot', 'arp'],
+  ['button', 'GLO', 200], ['shot', 'global'],
+  ['button', 'SEQ', 200],                                // HOLD off
+  ['knob', 'PRESETS', 3],
+  ['button', 'HOME', 200], ['shot', 'preset-f4'],
+  ['button', 'SAVE', 200], ['shot', 'save'],
+  ['button', 'HOME', 200], ['shot', 'cancelled'],
 ];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

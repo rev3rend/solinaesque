@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 M-Vave-OP1 contributors
 // The browser emulator's WebAssembly without a browser: boot, the screen drawn, a key sounds and lights its LED, a
-// button lights its LED, MIDI IN sounds, the render keeps up with real time by a wide margin.
+// button lights its LED, MIDI IN sounds, the render keeps up with real time by a wide margin. Solinaesque's default
+// sound (F1 CLASSIC) has a ~110 ms attack and a ~330 ms shared release: the checks give it that time.
 //   node web/emu/emu_test.mjs build/emu/emu.wasm
 import { readFileSync } from "node:fs";
 
@@ -13,6 +14,7 @@ const ex = instance.exports;
 ex._initialize();
 ex.web_boot();
 const N = 128;
+const RELEASE_Q = 400;                       // quanta of 128 frames (~1.2 s): past F1 CLASSIC's release
 const render = (quanta) => {
   let peak = 0;
   for (let q = 0; q < quanta; q++) {
@@ -36,7 +38,7 @@ const p = render(100);
 ok(p > 0.05 && p <= 0.5, `a key sounds (peak ${p.toFixed(3)})`);
 ok(leds()[14] === 1, "a key lights its LED");
 ex.web_keys(0);
-render(20);
+render(RELEASE_Q);
 ok(render(20) === 0 && leds()[14] === 0, "released: silent, LED dark");
 
 ex.web_buttons(1 << 10);                     // PLAY
@@ -52,7 +54,7 @@ ok(ex.web_screen_draws() > draws, "a knob turned redraws");
 ex.web_midi(0x90, 69, 100);
 ok(render(50) > 0.05, "MIDI note-on sounds");
 ex.web_midi(0x80, 69, 0);
-render(10);
+render(RELEASE_Q);
 ok(render(20) === 0, "MIDI note-off: silent");
 
 const t0 = performance.now();
