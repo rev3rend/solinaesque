@@ -130,10 +130,9 @@ static void status_line(char *b, unsigned max)   /* ensemble, octave, trigger mo
     char t[8];
     str_cpy(b, "ENS ", max);
     cat(b, ENS_NAME[cur.p[P_ENS]], max);
-    cat(b, "  OCT ", max);
+    cat(b, "  OCT", max);
     fmt_int(t, set.oct);
-    if (set.oct > 0)
-        cat(b, "+", max);
+    cat(b, set.oct > 0 ? "+" : set.oct ? "" : " ", max);   /* "OCT+1", "OCT-2", "OCT 0" */
     cat(b, t, max);
     cat(b, "  ", max);
     cat(b, TRIG_NAME[set.g[G_TRIG]], max);
@@ -152,13 +151,31 @@ static const char *bottom_text(void)             /* a message while it lasts */
     return (int32_t)(ui.msg_until - fm1_ms) > 0 ? ui.msg : "";
 }
 
+static uint32_t cpu_pct5(void)                   /* the audio load in %, in steps of 5 (the screen redraws per step) */
+{
+    uint32_t p = audio_cpu_q8 * 100u / 256u;
+    return p > 100u ? 100u : p / 5u * 5u;
+}
+
+static void cpu_text(char *b, unsigned max)
+{
+    char t[8];
+    fmt_int(t, (int32_t)cpu_pct5());
+    str_cpy(b, "CPU ", max);
+    cat(b, t, max);
+    cat(b, "%", max);
+}
+
 static void draw_home_status(void)
 {
     char b[48];
     uint32_t n;
+    int32_t x;
     cv_begin(240, 56, T_BG);
+    cpu_text(b, sizeof b);                       /* the audio load, in the accent while notes are being shed */
+    x = cv_text_r(232, 0, &AF_S, b, vox.cap < MAX_SOUNDING ? T_ACCENT : T_DIM, T_BG);
     status_line(b, sizeof b);
-    cv_text_fit(8, 0, &AF_S, b, T_MID, T_BG, 224);
+    cv_text_fit(8, 0, &AF_S, b, T_MID, T_BG, x - 8 - 8);
     for (n = 24; n < 120u; n++) {                /* C1 .. B8: a tick per note, lit while it is gated */
         int32_t x = 0 + (int32_t)(n - 24u) * 5 / 2;
         int on = (int)((vox.gated_pub[n >> 5] >> (n & 31u)) & 1u);
@@ -275,7 +292,7 @@ static void ui_draw(void)
         s[0] = fnv_s(fnv(h0, cur_index), cur.name);
         s[1] = sig_preset(h0);
         s[2] = fnv(fnv(fnv(fnv(fnv(note_dots_sig(), (uint32_t)set.oct), set.g[G_TRIG]), ui.hold), ui.arp), m);
-        s[2] = fnv(s[2], (uint32_t)cur.p[P_ENS]);
+        s[2] = fnv(fnv(fnv(s[2], (uint32_t)cur.p[P_ENS]), cpu_pct5()), vox.cap < MAX_SOUNDING);
         if (all || s[0] != ui.sig[0])
             draw_home_top();
         if (all || s[1] != ui.sig[1])
@@ -495,6 +512,7 @@ static void ui_frame(void)
     ui.frames++;
     ui_buttons();
     ui_encoders();
+    snd_shed();
     ui_master();
     ui_leds();
     ui_draw();

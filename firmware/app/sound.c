@@ -12,7 +12,8 @@
  * volatile requests; ISR -> main loop: the published gated set and the sounding count. */
 
 #define NOTE_KEY0 53u            /* note key 0 is F3 (hal/fm1_input.h fm1_in.notes) */
-#define MAX_SOUNDING 32u         /* notes rendered per block (lowest first); the real ceiling is measured in M2 */
+#define MAX_SOUNDING 32u         /* notes rendered per block at most: held ones first (lowest first), then releasing */
+#define CAP_MIN 8u               /* the load shedding (snd_shed) never goes below this many */
 #define GATE_ONE 1024            /* a key gate fully open */
 #define GATE_STEP 256            /* per block (32 frames): 4 blocks, ~2.9 ms, from shut to open */
 #define ENV_ONE (1 << 24)        /* the envelope's full level, Q24 */
@@ -57,6 +58,8 @@ static struct {
     volatile uint8_t midi_off_req;   /* main loop -> ISR: release every MIDI note (the channel changed) */
     volatile uint32_t gated_pub[4];  /* ISR -> main loop: the gated notes (LEDs, the screen's dots) */
     volatile uint32_t sounding_pub;  /* ISR -> main loop: notes rendered last block */
+    volatile uint32_t cap;           /* main loop -> ISR: notes rendered at most (CAP_MIN .. MAX_SOUNDING; snd_shed) */
+    uint32_t cap_ms;                 /* (main loop: when the cap last rose) */
 } vox;
 
 static const uint8_t *note_oct_tbl(void)        /* n / 12 without a divide in the ISR */
@@ -148,7 +151,7 @@ static void env_block(uint32_t any_gated, uint32_t new_note)
 
 static void app_audio(int32_t *out, uint32_t n)
 {
-    uint32_t keys = fm1_in.notes, pkt, i, w, any = 0, fresh = 0, input = 0, rendered = 0;
+    uint32_t keys = fm1_in.notes, pkt, i, w, any = 0, fresh = 0, input = 0, rendered = 0, cap, pass;
     uint32_t gated[4], target[4], active[4], kb = snd.key_base;
     int32_t e0, e1, de, a16 = snd.amp16, a8 = snd.amp8, a4 = snd.amp4, gain = snd.gain;
 
@@ -219,13 +222,25 @@ static void app_audio(int32_t *out, uint32_t n)
 
     for (i = 0; i < n; i++)
         vox.mix[i] = 0;
-    for (w = 0; w < 4u; w++) {
-        uint32_t bits = active[w];
-        while (bits && rendered < MAX_SOUNDING) {
+    /* two passes: the held notes first (lowest first), then the releasing ones in what the cap leaves; a releasing
+     * note past the cap is dropped (its gate shut: it was fading anyway), a held one past it waits silent */
+    cap = vox.cap;
+    cap = cap < CAP_MIN ? CAP_MIN : cap > MAX_SOUNDING ? MAX_SOUNDING : cap;
+    for (pass = 0; pass < 8u; pass++) {
+        uint32_t w = pass & 3u, held = pass < 4u;
+        uint32_t bits = held ? active[w] & target[w] : active[w] & ~target[w];
+        while (bits) {
             uint32_t b = (uint32_t)__builtin_ctz(bits), note = (w << 5) + b, k, k16, k4, ph, inc;
             int32_t g0 = vox.gate[note], g1, gs, dg;
             bits &= bits - 1u;
-            g1 = (target[w] >> b) & 1u ? g0 + GATE_STEP : g0 - GATE_STEP;
+            if (rendered >= cap) {
+                if (!held) {
+                    vox.gate[note] = 0;
+                    bit_set(vox.open, note, 0);
+                }
+                continue;
+            }
+            g1 = held ? g0 + GATE_STEP : g0 - GATE_STEP;
             g1 = g1 < 0 ? 0 : g1 > GATE_ONE ? GATE_ONE : g1;
             vox.gate[note] = (uint16_t)g1;
             bit_set(vox.open, note, g1 > 0);
@@ -306,8 +321,27 @@ static void snd_update(void)
     snd.key_base = (uint32_t)((int32_t)NOTE_KEY0 + 12 * set.oct);
 }
 
+/* main loop, every frame: the load shedding. audio_cpu_q8 is the last half buffer's ISR time in 1/256 of the half
+ * (audio.c); above ~80 % the main loop starves (the watchdog, the update entry) and the sound crackles, so the
+ * number of notes rendered falls fast (2 a frame) and climbs back slowly (1 every 250 ms) once the load is under
+ * ~60 %. Felucca sheds voices above 85 % the same way. */
+#define SHED_HI 205u             /* 80 % */
+#define SHED_LO 154u             /* 60 % */
+static void snd_shed(void)
+{
+    uint32_t load = audio_cpu_q8, cap = vox.cap;
+    if (load > SHED_HI && cap > CAP_MIN) {
+        vox.cap = cap - 2u < CAP_MIN ? CAP_MIN : cap - 2u;
+        vox.cap_ms = fm1_ms;
+    } else if (load < SHED_LO && cap < MAX_SOUNDING && fm1_ms - vox.cap_ms >= 250u) {
+        vox.cap = cap + 1u;
+        vox.cap_ms = fm1_ms;
+    }
+}
+
 static void snd_init(void)
 {
     NOTE_OCT = note_oct_tbl();
+    vox.cap = MAX_SOUNDING;
     snd_update();
 }

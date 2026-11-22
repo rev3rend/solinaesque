@@ -95,6 +95,9 @@ the panel of a 1970s string machine. Every screen is drawn lazily (a signature p
 - **Ceiling:** the number of sounding notes is limited by the audio ISR budget (measured; the target is at least 32
   notes × 3 registers, the oldest releasing notes are dropped first). The skeleton renders at most 32 notes per block,
   lowest first.
+- **Load shedding:** the main loop watches the audio ISR's load (`audio_cpu_q8`): above 80 % the number of notes
+  rendered falls 2 a frame (never below 8), under 60 % it climbs back 1 every 250 ms. Held notes render first, a
+  releasing note past the cap is dropped. HOME shows the load (`CPU nn%`, in the accent while shedding).
 - **Level:** one register at 100 % peaks at 5000 (Q15) before VOLUME and MASTER; F1 CLASSIC's single note is about
   −18 dBFS at the default VOLUME, a big chord runs into the soft knee (above 20000) and the ceiling.
 

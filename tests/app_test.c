@@ -186,9 +186,11 @@ static void screens(void)
     for (i = 0; i < 4u; i++)
         vox.gated_pub[i] = 0xFFFFFFFFu;
     msg("CHORD MEMORY: SOON");
+    audio_cpu_q8 = 255;                                 /* CPU 100 %, shedding */
     tap(B_HOME);
     host_png("build/shots/home_widest.png");
     lint("HOME at its widest");
+    audio_cpu_q8 = 0;
     host_press(B_SAVE, 1);
     host_frame();
     host_press(B_SAVE, 0);
@@ -591,6 +593,42 @@ static void sound(void)
     app_audio_stop();
     host_render(buf, 1024);
     check("app_audio_stop: silent at once, the MIDI note forgotten", peak(buf, 1024) == 0);
+
+    /* the ceiling: held notes first, releasing ones dropped past it; the load shedding moves it */
+    silence();
+    voice(0, 100, 0, 0, 0);
+    vox.cap = CAP_MIN;
+    fm1_in.notes = (1u << 10) - 1u;                     /* 10 keys held, the cap at 8 */
+    host_render(buf, 256);
+    check("cap 8, 10 held: 8 rendered, the 2 highest wait silent",
+          vox.sounding_pub == 8u && vox.gate[53 + 7] == GATE_ONE && vox.gate[53 + 8] == 0 && vox.gate[53 + 9] == 0);
+    fm1_in.notes &= ~1u;                                /* key 0 up: releasing, past the cap behind 8 held */
+    host_render(buf, CTL);
+    check("cap 8: a releasing note gives way to the held ones", vox.gate[53] == 0 && vox.sounding_pub == 8u &&
+                                                                vox.gate[53 + 8] == GATE_STEP);
+    silence();
+    vox.cap = MAX_SOUNDING;
+    audio_cpu_q8 = 240;                                 /* ~94 %: shed */
+    frames(5);
+    check("load > 80 %: the cap falls fast (2 a frame)", vox.cap == MAX_SOUNDING - 10u);
+    frames(20);
+    check("load > 80 %: down to CAP_MIN, not below", vox.cap == CAP_MIN);
+    audio_cpu_q8 = 100;                                 /* ~39 % */
+    frames(17);
+    check("load < 60 %: the cap climbs back slowly (1 per 250 ms)", vox.cap == CAP_MIN + 1u);
+    frames(450);
+    check("load < 60 %: back up to MAX_SOUNDING", vox.cap == MAX_SOUNDING);
+    audio_cpu_q8 = 180;                                 /* 70 %: between, nothing moves */
+    vox.cap = 20;
+    frames(100);
+    check("load between 60 and 80 %: the cap stays", vox.cap == 20u);
+    tap(B_HOME);
+    host_frame();
+    audio_cpu_q8 = 60;
+    host_frame();
+    check("HOME: a new CPU reading redraws the status line only", host_blits == 1u);
+    audio_cpu_q8 = 0;
+    vox.cap = MAX_SOUNDING;
 
     /* every key and every MIDI note at once, all registers: the ceiling holds, no wrap-around */
     voice(100, 100, 100, 0, 0);
