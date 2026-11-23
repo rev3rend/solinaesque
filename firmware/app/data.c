@@ -43,8 +43,8 @@ enum { G_TRIG, G_TUNE, G_MIDICH, G_VOL, G_ARPM, G_ARPR, G_ARPO, G_ARPG, NG };
 static const param_t GP[NG] = {
     {"TRIGGER", K_TRIG, 0, 1, 0, 1},   {"TUNE", K_TUNE, -100, 100, 0, 1}, {"MIDI CH", K_CH, 0, 16, 0, 1},
     {"VOLUME", K_PCT, 0, 100, 80, 1},
-    {"MODE", K_ARPM, 0, 4, 0, 0},      {"RATE", K_ARPR, 0, 5, 3, 0},      {"OCTAVES", K_OCT, 1, 4, 1, 0},
-    {"GATE", K_PCT, 10, 100, 50, 0},
+    {"MODE", K_ARPM, 0, 4, 0, 1},      {"RATE", K_ARPR, 0, 5, 3, 1},      {"OCTAVES", K_OCT, 1, 4, 1, 1},
+    {"GATE", K_PCT, 10, 100, 50, 1},
 };
 
 /* pages: four parameters each, KNOB 1..4 top to bottom; 0..5 the sound's, 6..7 the settings' */

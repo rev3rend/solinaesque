@@ -5,6 +5,7 @@
  * the parts, in dependency order:
  *   data.c    the parameters, the sound being played, the settings, the factory and user presets, their records
  *   fx.c      the effects (audio ISR, on the FPU): ensemble, flanger, delay
+ *   seq.c     notes before they sound (audio ISR): chord memory, the arpeggiator and its clock, MIDI out
  *   sound.c   the audio ISR: the divide-down oscillator bank, the registers, the key gates, the shared envelope
  *   ui.c      the panel: controls, LEDs, the HOME, page and SAVE screens */
 #ifndef APP_NAME
@@ -18,6 +19,7 @@
 
 #include "data.c"
 #include "fx.c"
+#include "seq.c"
 #include "sound.c"
 #include "ui.c"
 

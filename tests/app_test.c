@@ -14,6 +14,7 @@
 #include <math.h>
 
 static int failed;
+static int32_t buf_ctl[2u * CTL];
 static void check(const char *what, int ok)
 {
     printf("%-60s %s\n", what, ok ? "ok" : "FAIL");
@@ -260,9 +261,9 @@ static void controls(void)
     tap(B_SEQ);
     check("SEQ again: HOLD off", !ui.hold && !vox.hold);
     tap(B_ARP);
-    check("ARP tapped: on, says SOON", ui.arp && str_eq(ui.msg, "ARP ON: SOON"));
+    check("ARP tapped: on", ui.arp && arp_on && seqp.on && str_eq(ui.msg, "ARP ON"));
     tap(B_ARP);
-    check("ARP tapped again: off", !ui.arp);
+    check("ARP tapped again: off", !ui.arp && !seqp.on);
     host_press(B_ARP, 1);
     host_frame();
     host_turn(EN_PRESET, 8);
@@ -272,9 +273,17 @@ static void controls(void)
     host_frame();
     check("ARP held + PRESETS: no tap on release", !ui.arp);
     tap(B_PLAY);
-    check("PLAY: says SOON", str_eq(ui.msg, "PLAY: SOON"));
+    check("PLAY with the arp off: says so", str_eq(ui.msg, "PLAY: ARP IS OFF"));
+    host_render(buf_ctl, CTL);
+    tap(B_ARP);                                         /* the arp on afterwards: still running (no stale request) */
+    host_render(buf_ctl, CTL);
+    check("PLAY with the arp off leaves the transport alone", !arp.halt_pub);
+    tap(B_ARP);
+    host_render(buf_ctl, CTL);
     tap(B_REC);
-    check("REC: says SOON", str_eq(ui.msg, "CHORD MEMORY: SOON"));
+    check("REC tapped: recording a chord", ui.recording && str_eq(ui.msg, "CHORD: HOLD KEYS, THEN REC"));
+    tap(B_REC);
+    check("REC again with no keys: no chord, says why", !ui.recording && !chord_on() && str_eq(ui.msg, "CHORD: HOLD 2 OR MORE KEYS"));
     tap(B_HOME);
 }
 
@@ -370,6 +379,7 @@ static void persistence(void)
 
 /* ---------------------------------------------------------------- presets --- */
 static int32_t peak(const int32_t *b, uint32_t frames);   /* (sound helpers, below) */
+static void voice(int r16, int r8, int r4, int atk, int rel);
 static void silence(void);
 static void presets(void)
 {
@@ -1338,6 +1348,321 @@ static void sound(void)
     }
 }
 
+/* ---------------------------------------------------------------- the arp, chord memory, MIDI out --- */
+static int32_t seq_notes[64];
+static uint32_t seq_at[64], seq_n, seq_on_blocks;
+
+static void arp_watch(uint32_t blocks)                 /* run, noting each arp note as it starts (and when) */
+{
+    static int32_t b[2u * CTL];
+    static uint32_t clock;
+    int32_t last = -2;
+    uint32_t i;
+    seq_n = seq_on_blocks = 0;
+    for (i = 0; i < blocks; i++, clock++) {
+        host_render(b, CTL);
+        if (arp.note_pub >= 0)
+            seq_on_blocks++;
+        if (arp.note_pub >= 0 && (arp.note_pub != last || arp.gate_q8 + (CTL << 8) > 0x7FFFFFFFu) && seq_n < 64u &&
+            (last < 0 || arp.note_pub != last)) {
+            seq_notes[seq_n] = arp.note_pub;
+            seq_at[seq_n++] = i;
+        }
+        last = arp.note_pub;
+    }
+}
+
+static int seq_is(const int32_t *want, uint32_t n)     /* the first n notes started, as given */
+{
+    uint32_t i;
+    if (seq_n < n)
+        return 0;
+    for (i = 0; i < n; i++)
+        if (seq_notes[i] != want[i])
+            return 0;
+    return 1;
+}
+
+static double seq_step(void)                           /* the mean time between note starts, samples */
+{
+    return seq_n > 2u ? (double)(seq_at[seq_n - 1u] - seq_at[0]) * CTL / (seq_n - 1u) : 0.0;
+}
+
+static int out_take(uint32_t st, uint32_t note)        /* the next MIDI out packet is st/note? */
+{
+    uint32_t pkt;
+    if (!host_midi_out(&pkt))
+        return 0;
+    return ((pkt >> 8) & 0xFFu) == st && ((pkt >> 16) & 0x7Fu) == note;
+}
+
+static void out_flush(void)
+{
+    uint32_t pkt;
+    while (host_midi_out(&pkt))
+        ;
+}
+
+static void arp_mode(int mode, int rate, int oct, int gate)
+{
+    set.g[G_ARPM] = (int8_t)mode;
+    set.g[G_ARPR] = (int8_t)rate;
+    set.g[G_ARPO] = (int8_t)oct;
+    set.g[G_ARPG] = (int8_t)gate;
+    snd_update();
+}
+
+static void sequencer(void)
+{
+    static const int32_t UP[] = {60, 64, 67, 60, 64, 67}, UP2[] = {60, 64, 67, 72, 76, 79, 60},
+                         DOWN[] = {67, 64, 60, 67, 64, 60}, UPDN[] = {60, 64, 67, 64, 60, 64, 67},
+                         PLAYED[] = {67, 60, 64, 67, 60, 64};
+    const uint32_t CEG = 1u << 7 | 1u << 11 | 1u << 14;   /* C4 E4 G4 */
+    uint32_t i, k, one;
+    host_nor_erase();
+    power_cycle();
+    voice(0, 100, 0, 0, 0);
+    set.bpm = 120;
+    arp_mode(0, 3, 1, 50);                                /* UP, 1/16, 1 octave, gate 50 % */
+    tap(B_ARP);
+    fm1_in.notes = CEG;
+    arp_watch(1400);                                      /* ~1 s */
+    printf("  (UP: %d %d %d %d %d %d, a step every %.1f samples, gate %.2f)\n", seq_notes[0], seq_notes[1], seq_notes[2],
+           seq_notes[3], seq_notes[4], seq_notes[5], seq_step(), (double)seq_on_blocks / 1400);
+    check("arp UP: C E G C E G, the first at once", seq_is(UP, 6) && seq_at[0] == 0u);
+    check("arp 1/16 at 120 BPM: a step every 5 512.5 samples (+-32)", fabs(seq_step() - 5512.5) < 32.0);
+    check("arp GATE 50 %: on half the time (+-5 %)", fabs((double)seq_on_blocks / 1400 - 0.5) < 0.05);
+    for (one = 1, k = 0; k < 200u; k++) {                 /* one note sounds at a time */
+        host_render(buf_ctl, CTL);
+        one &= (uint32_t)__builtin_popcount(vox.prev_gated[0]) + (uint32_t)__builtin_popcount(vox.prev_gated[1]) +
+                   (uint32_t)__builtin_popcount(vox.prev_gated[2]) + (uint32_t)__builtin_popcount(vox.prev_gated[3]) <= 1u;
+    }
+    check("arp: one note sounds at a time", one);
+    fm1_in.notes = 0;
+    arp_watch(40);
+    arp_mode(0, 3, 2, 50);
+    fm1_in.notes = CEG;
+    arp_watch(1400);
+    check("arp 2 octaves: C E G C' E' G' C", seq_is(UP2, 7));
+    fm1_in.notes = 0;
+    arp_watch(40);
+    arp_mode(1, 3, 1, 50);
+    fm1_in.notes = CEG;
+    arp_watch(1200);
+    check("arp DOWN: G E C G E C", seq_is(DOWN, 6));
+    fm1_in.notes = 0;
+    arp_watch(40);
+    arp_mode(2, 3, 1, 50);
+    fm1_in.notes = CEG;
+    arp_watch(1400);
+    check("arp UP-DOWN: C E G E C E G (the ends once)", seq_is(UPDN, 7));
+    fm1_in.notes = 0;
+    arp_watch(40);
+    arp_mode(4, 3, 1, 50);                                /* PLAYED: G, then C, then E */
+    fm1_in.notes = 1u << 14;
+    host_render(buf_ctl, CTL);
+    fm1_in.notes |= 1u << 7;
+    host_render(buf_ctl, CTL);
+    fm1_in.notes |= 1u << 11;
+    arp_watch(1200);
+    check("arp PLAYED: in the order pressed (G C E)", seq_is(PLAYED, 6) || (seq_n >= 6u && seq_notes[1] == 60 &&
+                                                                       seq_notes[2] == 64 && seq_notes[3] == 67));
+    fm1_in.notes = 0;
+    arp_watch(40);
+    arp_mode(3, 3, 1, 50);                                /* RANDOM */
+    fm1_in.notes = CEG;
+    arp_watch(2800);
+    {
+        int ok = seq_n > 10u, seen[3] = {0, 0, 0};
+        for (i = 0; i < seq_n; i++) {
+            ok &= seq_notes[i] == 60 || seq_notes[i] == 64 || seq_notes[i] == 67;
+            seen[seq_notes[i] == 60 ? 0 : seq_notes[i] == 64 ? 1 : 2] = 1;
+        }
+        check("arp RANDOM: only the held notes, all of them", ok && seen[0] && seen[1] && seen[2]);
+    }
+    arp_mode(0, 3, 1, 50);
+
+    /* PLAY: the transport */
+    tap(B_PLAY);
+    arp_watch(400);
+    check("PLAY: the arp stops", seq_n == 0u && arp.halt_pub && str_eq(ui.msg, "ARP STOP"));
+    tap(B_HOME);
+    host_frame();
+    host_png("build/shots/arp_stopped.png");
+    tap(B_PLAY);
+    arp_watch(400);
+    check("PLAY again: it runs, from the first note at once", seq_n > 0u && seq_notes[0] == 60 && seq_at[0] <= 1u);
+
+    /* HOLD: the arp keeps going on a latched chord */
+    tap(B_SEQ);
+    fm1_in.notes = CEG;
+    arp_watch(20);
+    fm1_in.notes = 0;
+    arp_watch(1400);
+    check("HOLD + arp: the latched chord keeps arpeggiating", seq_is(UP, 3) || seq_n >= 6u);
+    tap(B_SEQ);
+    arp_watch(200);
+    check("HOLD off: the arp stops (nothing held)", seq_n == 0u);
+
+    /* MIDI clock: 24 a quarter takes over while it comes in; start, stop, continue */
+    fm1_in.notes = CEG;
+    host_midi(0xFA, 0, 0);                                /* start */
+    seq_n = 0;
+    {
+        uint32_t t, starts = 0, first = 0, last = 0;
+        int32_t prev = -2, firstnote = -1;
+        for (t = 0; t < 72u; t++) {                       /* 3 quarters, a tick every 1 088 samples (~101 BPM) */
+            host_midi(0xF8, 0, 0);
+            for (k = 0; k < 34u; k++) {
+                host_render(buf_ctl, CTL);
+                if (arp.note_pub >= 0 && prev < 0) {
+                    if (!starts)
+                        first = t * 34u + k, firstnote = arp.note_pub;
+                    last = t * 34u + k;
+                    starts++;
+                }
+                prev = arp.note_pub;
+            }
+        }
+        printf("  (MIDI clock: %u steps, one every %.0f samples, the first %d)\n", starts,
+               starts > 1u ? (double)(last - first) * CTL / (starts - 1u) : 0.0, firstnote);
+        check("MIDI clock: a 1/16 step every 6 ticks (6 528 samples)", starts == 12u &&
+                                                                    fabs((double)(last - first) * CTL / 11.0 - 6528.0) < 40.0);
+        check("MIDI start: the pattern from its top", firstnote == 60);
+        check("MIDI clock shown (CLK)", arp.ext_pub == 1u);
+        tap(B_HOME);
+        host_frame();
+        host_png("build/shots/arp_clock.png");
+    }
+    host_midi(0xFC, 0, 0);                                /* stop */
+    host_midi(0xF8, 0, 0);
+    arp_watch(30);
+    check("MIDI stop: silent", seq_n == 0u && arp.halt_pub);
+    host_midi(0xFB, 0, 0);                                /* continue */
+    for (k = 0; k < 12u; k++) {
+        host_midi(0xF8, 0, 0);
+        arp_watch(34);
+    }
+    check("MIDI continue: it runs again", !arp.halt_pub);
+    arp_watch(800);                                       /* no more ticks: the internal clock after half a second */
+    check("MIDI clock gone: the internal tempo again", arp.ext_pub == 0u && seq_n > 0u);
+    fm1_in.notes = 0;
+    arp_watch(40);
+    tap(B_ARP);
+
+    /* chord memory */
+    tap(B_REC);
+    fm1_in.notes = CEG;
+    host_render(buf_ctl, CTL);
+    host_frame();
+    fm1_in.notes = 0;
+    host_render(buf_ctl, CTL);
+    host_frame();
+    tap(B_REC);
+    check("REC, C E G, REC: the chord is 0 4 7", chord_on() && set.chord_n[0] == 3u && set.chord[0][0] == 0 &&
+                                                  set.chord[0][1] == 4 && set.chord[0][2] == 7 && str_eq(ui.msg, "CHORD SET: NOTES 3"));
+    fm1_in.notes = 1u << 9;                               /* D4 alone */
+    host_render(buf_ctl, CTL);
+    check("chord memory: D4 plays D F# A", vox.gated_pub[1] == (1u << (62 - 32)) && vox.gated_pub[2] == (1u << (66 - 64) | 1u << (69 - 64)) &&
+                                           !vox.gated_pub[0] && !vox.gated_pub[3]);
+    fm1_in.notes = 0;
+    host_render(buf_ctl, CTL);
+    power_cycle();
+    check("the chord kept over a power cycle", chord_on() && set.chord[0][2] == 7);
+    out_flush();
+    fm1_in.notes = 1u << 9;
+    host_render(buf_ctl, CTL);
+    check("MIDI out with the chord: D F# A on", out_take(0x90, 62) && out_take(0x90, 66) && out_take(0x90, 69));
+    fm1_in.notes = 0;
+    host_render(buf_ctl, CTL);
+    check("MIDI out: their offs", out_take(0x80, 62) && out_take(0x80, 66) && out_take(0x80, 69));
+    host_press(B_REC, 1);
+    frames(40);
+    host_press(B_REC, 0);
+    host_frame();
+    check("REC held: the chord cleared", !chord_on() && str_eq(ui.msg, "CHORD CLEARED"));
+
+    /* MIDI out: the keys, channel, HOLD, no echo of MIDI in, the arp's notes, a stop */
+    out_flush();
+    fm1_in.notes = 1u;                                    /* F3 */
+    host_render(buf_ctl, CTL);
+    check("MIDI out: a key's note-on (F3, channel 1, velocity 100)", out_take(0x90, 53));
+    fm1_in.notes = 0;
+    host_render(buf_ctl, CTL);
+    check("MIDI out: its note-off", out_take(0x80, 53));
+    host_midi(0x90, 60, 100);
+    host_render(buf_ctl, CTL);
+    {
+        uint32_t pkt;
+        check("MIDI in is not echoed to MIDI out", !host_midi_out(&pkt));
+    }
+    host_midi(0x80, 60, 0);
+    set.g[G_MIDICH] = 3;
+    snd_update();
+    fm1_in.notes = 1u;
+    host_render(buf_ctl, CTL);
+    check("MIDI out on MIDI CH 3", out_take(0x92, 53));
+    fm1_in.notes = 0;
+    host_render(buf_ctl, CTL);
+    out_flush();
+    set.g[G_MIDICH] = 0;
+    snd_update();
+    tap(B_SEQ);                                           /* HOLD keeps it on */
+    fm1_in.notes = 1u;
+    host_render(buf_ctl, CTL);
+    fm1_in.notes = 0;
+    host_render(buf_ctl, CTL);
+    host_render(buf_ctl, CTL);
+    check("MIDI out with HOLD: on, no off after the key goes up", out_take(0x90, 53) && !out_take(0x80, 53));
+    tap(B_SEQ);
+    host_render(buf_ctl, CTL);
+    check("MIDI out: HOLD off sends the off", out_take(0x80, 53));
+    tap(B_ARP);
+    out_flush();
+    fm1_in.notes = CEG;
+    arp_watch(400);
+    {
+        uint32_t pkt, ons = 0, offs = 0;
+        while (host_midi_out(&pkt)) {
+            ons += ((pkt >> 8) & 0xF0u) == 0x90u;
+            offs += ((pkt >> 8) & 0xF0u) == 0x80u;
+        }
+        check("MIDI out with the arp: its notes, on and off (not the chord)", ons >= 2u && ons <= 3u && offs >= 1u);
+    }
+    app_audio_stop();
+    host_render(buf_ctl, CTL);
+    check("app_audio_stop: every MIDI out note gets its off", !(arp.out[0] | arp.out[1] | arp.out[2] | arp.out[3]));
+    fm1_in.notes = 0;
+    tap(B_ARP);
+    out_flush();
+
+    /* the screens at their widest: the ARP page stopped at 240 BPM, HOME's flags */
+    tap(B_ARP);
+    set.bpm = 240;
+    tap(B_PLAY);
+    host_render(buf_ctl, CTL);
+    host_press(B_ARP, 1);
+    frames(40);
+    host_press(B_ARP, 0);
+    frames(90);                                           /* (the message gone: the footer shows) */
+    host_png("build/shots/arp_page.png");
+    lint("the ARP page, stopped at 240 BPM");
+    tap(B_SEQ);
+    tap(B_REC);
+    msg("CHORD: HOLD 2 OR MORE KEYS");
+    tap(B_HOME);
+    host_frame();
+    host_png("build/shots/home_flags.png");
+    lint("HOME with every flag and a long message");
+    tap(B_REC);
+    tap(B_SEQ);
+    tap(B_PLAY);
+    host_render(buf_ctl, CTL);
+    tap(B_ARP);
+    host_nor_erase();
+    power_cycle();
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -1346,6 +1671,7 @@ int main(void)
     controls();
     persistence();
     presets();
+    sequencer();
     sound();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

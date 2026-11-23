@@ -169,6 +169,8 @@ static struct {
     uint32_t midi[4];            /* held over MIDI */
     uint32_t latch[4];           /* HOLD: notes kept after their keys went up */
     uint32_t sus[4];             /* the sustain pedal's notes */
+    uint32_t klatch[4];          /* HOLD's notes from the panel keys (what MIDI out keeps on) */
+    volatile uint32_t raw_pub[4];    /* ISR -> main loop: keys and MIDI notes down, before the chord (REC) */
     uint32_t prev_gated[4];      /* last block's gated set (new notes trigger the envelope) */
     uint32_t prev_input;         /* last block's: any key or MIDI note down (HOLD replaces the latched set) */
     int32_t env;                 /* the shared envelope, Q24 */
@@ -279,6 +281,10 @@ static __attribute__((noinline)) void snd_midi(uint32_t pkt)
         bits_clear(vox.midi);
         bits_clear(vox.sus);
         vox.pedal = 0;
+        return;
+    }
+    if (((pkt >> 8) & 0xFFu) >= 0xF8u) {          /* clock, start, continue, stop: any channel (seq.c) */
+        seq_rt((pkt >> 8) & 0xFFu);
         return;
     }
     if (st < 0x80u || st == 0xF0u || (snd.midi_ch && ch + 1u != snd.midi_ch))
@@ -394,7 +400,7 @@ static void lfo_block(uint32_t *incm, int32_t *rrm, uint32_t *pw)
 static void app_audio(int32_t *out, uint32_t n)
 {
     uint32_t keys = fm1_in.notes, pkt, i, w, any = 0, fresh = 0, input = 0, rendered = 0, cap, pass;
-    uint32_t gated[4], target[4], active[4], kb = snd.key_base;
+    uint32_t gated[4], target[4], active[4], kb = snd.key_base, kset[4], mset[4], sound[4], want[4];
     int32_t e0, e1, de, a16 = snd.amp16, a8 = snd.amp8, a4 = snd.amp4, gain = snd.gain;
     int32_t w1 = snd.w1, w2 = snd.w2;
     uint32_t pw = snd.pw;
@@ -418,6 +424,9 @@ static void app_audio(int32_t *out, uint32_t n)
         bits_clear(vox.open);
         bits_clear(vox.prev_gated);
         vox.pedal = 0;
+        bits_clear(vox.klatch);
+        arp.note = -1;
+        arp.idx = 0;
         vox.bend = 0;
         vox.modw = 0;
         vox.env = 0;
@@ -427,31 +436,61 @@ static void app_audio(int32_t *out, uint32_t n)
         fx_reset();
     }
 
-    /* what is down now: the keys at the octave shift, MIDI; then HOLD and the pedal keep what was down */
+    /* what is down now: the keys at the octave shift, MIDI (each as the stored chord on it, seq.c); then HOLD and the
+     * pedal keep what was down; then the arp, if on, picks what sounds of it (seq.c) */
     for (w = 0; w < 4u; w++)
-        gated[w] = vox.midi[w];
+        kset[w] = 0;
     for (i = 0; keys >> i; i++)
         if ((keys >> i) & 1u && kb + i < 128u)
-            bit_set(gated, kb + i, 1);
-    for (w = 0; w < 4u; w++)
+            bit_set(kset, kb + i, 1);
+    for (w = 0; w < 4u; w++) {
+        mset[w] = vox.midi[w];
+        vox.raw_pub[w] = kset[w] | mset[w];      /* (REC records these: before the chord) */
+    }
+    chord_expand(kset);
+    chord_expand(mset);
+    for (w = 0; w < 4u; w++) {
+        gated[w] = kset[w] | mset[w];
         input |= gated[w];
+    }
     if (vox.hold) {                              /* a new chord after all keys were up replaces the latched one */
-        if (input && !vox.prev_input)
+        if (input && !vox.prev_input) {
             bits_clear(vox.latch);
-        for (w = 0; w < 4u; w++)
+            bits_clear(vox.klatch);
+        }
+        for (w = 0; w < 4u; w++) {
             vox.latch[w] |= gated[w];
-    } else
+            vox.klatch[w] |= kset[w];
+        }
+    } else {
         bits_clear(vox.latch);
+        bits_clear(vox.klatch);
+    }
     vox.prev_input = input;
     if (vox.pedal)
         for (w = 0; w < 4u; w++)
             vox.sus[w] |= gated[w];
-    for (w = 0; w < 4u; w++) {
+    for (w = 0; w < 4u; w++)
         gated[w] |= vox.latch[w] | vox.sus[w];
+    if (seqp.on) {                               /* the arp: one note at a time of what is held */
+        arp_block(gated, sound, n);
+        for (w = 0; w < 4u; w++)
+            want[w] = sound[w];
+    } else {
+        arp.play_req = 0;                        /* (a request from before the arp went off: dropped, not kept) */
+        arp.note_pub = -1;
+        for (w = 0; w < 4u; w++) {
+            sound[w] = gated[w];
+            want[w] = kset[w] | vox.klatch[w];   /* MIDI out: the panel's notes (no echo of MIDI in) */
+        }
+    }
+    seq_out(want);
+    for (w = 0; w < 4u; w++) {
+        vox.gated_pub[w] = gated[w] | sound[w];
+        gated[w] = sound[w];
         any |= gated[w];
         fresh |= gated[w] & ~vox.prev_gated[w];
         vox.prev_gated[w] = gated[w];
-        vox.gated_pub[w] = gated[w];
     }
 
     e0 = vox.env;
@@ -566,6 +605,7 @@ static void app_audio(int32_t *out, uint32_t n)
 static void app_audio_stop(void) { vox.stop_req = 1; }
 
 /* main loop: the engine's numbers from the parameters (on a change, and at boot) */
+static uint8_t arp_on, chord_rec;    /* (ui.c: ARP on; REC recording a chord) */
 static int32_t master_q8 = 256;  /* the MASTER pot, 0 .. 256 (ui.c reads it) */
 static void snd_update(void)
 {
@@ -633,6 +673,20 @@ static void snd_update(void)
     snd.lfo_fade = ms ? (int32_t)(65536u * CTL / (ms * (FS / 1000u))) : 65536;
     if (snd.lfo_fade < 1)
         snd.lfo_fade = 1;
+    {   /* the arp, chord memory, MIDI out (seq.c): steps a quarter for 1/4 1/8 1/8T 1/16 1/16T 1/32 */
+        static const uint8_t DIV[6] = {1, 2, 3, 4, 6, 8};
+        uint32_t d = DIV[set.g[G_ARPR] % 6], k;
+        seqp.mode = (uint32_t)set.g[G_ARPM];
+        seqp.tps = 24u / d;
+        seqp.oct = (uint32_t)set.g[G_ARPO];
+        seqp.step_q8 = (uint32_t)FS * 60u * 256u / (set.bpm * d);
+        seqp.gfrac = (uint32_t)set.g[G_ARPG] * 256u / 100u;
+        seqp.out_ch = set.g[G_MIDICH] ? (uint32_t)set.g[G_MIDICH] - 1u : 0u;
+        for (k = 0; k < CHORD_MAX; k++)
+            seqp.chord[k] = set.chord[0][k];
+        seqp.chord_n = chord_rec ? 0u : set.chord_n[0];   /* (while REC records: the keys plain) */
+        seqp.on = arp_on;
+    }
     snd.f_cut = cur.p[P_CUT];
     snd.f_res = cur.p[P_RES];
     snd.f_env = cur.p[P_FENV];

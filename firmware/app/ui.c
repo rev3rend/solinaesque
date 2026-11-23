@@ -25,12 +25,14 @@ static struct {
     char nm[NAME_EDIT + 1];      /* the name being edited, padded with spaces */
     uint8_t nm_cur;              /* the cursor in it */
     uint8_t nm_word;             /* the word list's position (KNOB 3) */
-    uint8_t hold, arp, chord;    /* SEQ (HOLD), ARP on, a chord stored (milestone 8) */
+    uint8_t hold, arp;           /* SEQ (HOLD), ARP on */
+    uint8_t recording;           /* REC: a chord being recorded */
+    uint32_t rec[4];             /* the notes held while it records */
     uint8_t set_dirty;           /* the settings changed since they were saved */
     uint32_t last_buttons;
     uint32_t down_ms[NB];        /* when each label went down (holds) */
     uint8_t held_fired[NB];      /* its hold already acted (no tap on release) */
-    char msg[24];
+    char msg[40];
     uint32_t msg_until;
     uint32_t sig[4];             /* the drawn areas' signatures */
     uint8_t drawn_page;          /* the page (or SAVE) the screen shows: a change draws everything */
@@ -180,6 +182,23 @@ static void cpu_text(char *b, unsigned max)
     cat(b, "%", max);
 }
 
+static int chord_on(void) { return set.chord_n[0] >= 2u; }
+
+static void flags_text(char *b, unsigned max)    /* HOME's flags: HOLD ARP (CLK: MIDI clock) CHORD REC */
+{
+    b[0] = 0;
+    if (ui.hold)
+        cat(b, "HOLD ", max);
+    if (ui.arp)
+        cat(b, arp.ext_pub ? "ARP CLK " : arp.halt_pub ? "ARP STOP " : "ARP ", max);
+    if (ui.recording)
+        cat(b, "REC ", max);
+    else if (chord_on())
+        cat(b, "CHORD ", max);
+    if (b[0])
+        b[str_len(b) - 1u] = 0;
+}
+
 static void draw_home_status(void)
 {
     char b[48];
@@ -195,9 +214,9 @@ static void draw_home_status(void)
         int on = (int)((vox.gated_pub[n >> 5] >> (n & 31u)) & 1u);
         cv_rect(x, on ? 18 : 22, 2, on ? 10 : 4, on ? T_ACCENT : (n % 12u ? T_LINE : T_DIM));
     }
-    str_cpy(b, ui.hold ? (ui.arp ? "HOLD ARP" : "HOLD") : ui.arp ? "ARP" : "", sizeof b);
-    cv_text_r(232, 36, &AF_S, b, T_ACCENT, T_BG);   /* the flags right, a message left of them */
-    cv_text_fit(8, 36, &AF_S, bottom_text(), T_TEXT, T_BG, 224 - 8 - text_w(&AF_S, "HOLD ARP"));
+    flags_text(b, sizeof b);
+    x = cv_text_r(232, 36, &AF_S, b, T_ACCENT, T_BG);   /* the flags right, a message left of them */
+    cv_text_fit(8, 36, &AF_S, bottom_text(), T_TEXT, T_BG, (b[0] ? x - 8 : 232) - 8);
     cv_blit(0, 184);
 }
 
@@ -246,12 +265,31 @@ static void draw_page_rows(uint32_t r0)          /* two rows (r0, r0 + 1), 44 px
     cv_blit(0, 32u + r0 * 44u);
 }
 
+static void arp_foot(char *b, unsigned max)      /* the ARP page's footer: the clock and the transport */
+{
+    char t[8];
+    if (arp.ext_pub)
+        str_cpy(b, "MIDI CLOCK", max);
+    else {
+        fmt_int(t, set.bpm);
+        str_cpy(b, "TEMPO ", max);
+        cat(b, t, max);
+        cat(b, " BPM", max);
+    }
+    cat(b, arp.halt_pub ? "   STOPPED" : arp.ext_pub ? "" : "   ARP + PRESETS", max);
+}
+
 static void draw_foot(void)
 {
     const char *m = bottom_text();
+    char b[48];
+    if (ui.page == PG_ARP)
+        arp_foot(b, sizeof b);
+    else
+        str_cpy(b, "SELECT: PAGE   HOME: BACK", sizeof b);
     cv_begin(240, 26, T_BG);
     cv_rect(10, 0, 220, 1, T_LINE);
-    cv_text_fit(10, 8, &AF_S, m[0] ? m : "SELECT: PAGE   HOME: BACK", m[0] ? T_TEXT : T_DIM, T_BG, 220);
+    cv_text_fit(10, 8, &AF_S, m[0] ? m : b, m[0] || ui.page == PG_ARP ? T_TEXT : T_DIM, T_BG, 220);
     cv_blit(0, 214);
 }
 
@@ -337,6 +375,7 @@ static void ui_draw(void)
         s[0] = fnv(fnv_s(fnv(h0, cur_index), cur.name), (uint32_t)preset_edited());
         s[1] = sig_preset(h0);
         s[2] = fnv(fnv(fnv(fnv(fnv(note_dots_sig(), (uint32_t)set.oct), set.g[G_TRIG]), ui.hold), ui.arp), m);
+        s[2] = fnv(fnv(fnv(fnv(s[2], ui.recording), (uint32_t)chord_on()), arp.ext_pub), arp.halt_pub);
         s[2] = fnv(fnv(fnv(s[2], (uint32_t)cur.p[P_ENS]), cpu_pct5()), vox.cap < MAX_SOUNDING);
         if (all || s[0] != ui.sig[0])
             draw_home_top();
@@ -352,7 +391,7 @@ static void ui_draw(void)
             row_param(ui.page, 2u * i + 1u, &v1);
             s[1u + i] = fnv(fnv(fnv(h0, ui.page), (uint32_t)*v0), (uint32_t)*v1);
         }
-        s[3] = m;
+        s[3] = fnv(fnv(fnv(m, ui.page == PG_ARP ? set.bpm : 0u), arp.ext_pub), arp.halt_pub);
         if (all || s[0] != ui.sig[0])
             draw_page_head();
         if (all || s[1] != ui.sig[1])
@@ -468,6 +507,53 @@ static void save_encoders(void)                  /* the SAVE screen's knobs */
     panel_enc(EN_SELECT);                        /* (not used here: dropped) */
 }
 
+/* chord memory: REC tapped starts recording (the keys play plain meanwhile), tapped again keeps what was held as the
+ * chord (semitones above its lowest note, up to 8 notes within 4 octaves); REC held clears it. Saved with the settings
+ * at once (a deliberate act, not a knob turn). */
+static void chord_rec_tap(void)
+{
+    uint32_t w, n = 0, lo = 128u, k;
+    if (!ui.recording) {
+        ui.recording = 1;
+        ui.rec[0] = ui.rec[1] = ui.rec[2] = ui.rec[3] = 0;
+        chord_rec = 1;
+        snd_update();
+        msg("CHORD: HOLD KEYS, THEN REC");
+        return;
+    }
+    ui.recording = 0;
+    chord_rec = 0;
+    for (k = 0; k < 128u; k++)
+        if ((ui.rec[k >> 5] >> (k & 31u)) & 1u) {
+            if (lo == 128u)
+                lo = k;
+            if (k - lo <= 48u && n < CHORD_MAX)
+                set.chord[0][n++] = (int8_t)(k - lo);
+        }
+    if (n >= 2u) {
+        char t[4];
+        for (w = n; w < CHORD_MAX; w++)
+            set.chord[0][w] = 0;
+        set.chord_n[0] = (uint8_t)n;
+        fmt_int(t, (int32_t)n);
+        if (data_save_settings())
+            msg("SAVE FAILED");
+        else
+            msg2("CHORD SET: NOTES ", t);
+    } else
+        msg("CHORD: HOLD 2 OR MORE KEYS");
+    snd_update();
+}
+
+static void chord_clear(void)
+{
+    ui.recording = 0;
+    chord_rec = 0;
+    set.chord_n[0] = 0;
+    snd_update();
+    msg(data_save_settings() ? "SAVE FAILED" : "CHORD CLEARED");
+}
+
 static void ui_buttons(void)
 {
     uint32_t now = fm1_in.buttons, b;
@@ -501,8 +587,11 @@ static void ui_buttons(void)
                 vox.hold = ui.hold;
                 msg(ui.hold ? "HOLD ON" : "HOLD OFF");
                 break;
-            case B_PLAY: msg("PLAY: SOON"); break;
-            case B_REC: msg("CHORD MEMORY: SOON"); break;
+            case B_PLAY:                         /* the arp's transport (the ISR flips it); nothing with the arp off */
+                if (ui.arp)
+                    arp.play_req = 1;
+                msg(!ui.arp ? "PLAY: ARP IS OFF" : arp.halt_pub ? "ARP PLAY" : "ARP STOP");
+                break;
             case B_OCTDN:
             case B_OCTUP: {
                 char t[8];
@@ -519,7 +608,7 @@ static void ui_buttons(void)
             if (b == B_ARP)
                 page_open(PG_ARP);
             else if (b == B_REC)
-                msg("CHORD CLEAR: SOON");
+                chord_clear();
             else if (b == B_HOME) {              /* revert: the stored preset again */
                 if (cur_index < NPRESETS) {
                     cur = *preset_at(cur_index);
@@ -536,8 +625,12 @@ static void ui_buttons(void)
         } else if (!down && was && !ui.held_fired[b]) {   /* released before the hold: a tap */
             if (b == B_ARP) {
                 ui.arp ^= 1u;
-                msg(ui.arp ? "ARP ON: SOON" : "ARP OFF");
-            } else if (b == B_SAVE)
+                arp_on = ui.arp;
+                snd_update();
+                msg(ui.arp ? "ARP ON" : "ARP OFF");
+            } else if (b == B_REC)
+                chord_rec_tap();
+            else if (b == B_SAVE)
                 save_open();
         }
     }
@@ -630,6 +723,8 @@ static void ui_leds(void)
         int on = 0;
         if (ui.page < NPAGES && PAGE_BTN[ui.page] == b)
             on = 1;
+        if ((b == B_PLAY && ui.arp && !arp.halt_pub) || (b == B_REC && (ui.recording ? blink : chord_on())))
+            on = 1;
         if ((b == B_HOME && ui.page == PG_HOME) || (b == B_SEQ && ui.hold) || (b == B_ARP && ui.arp) ||
             (b == B_SAVE && ui.saving && blink) || (b == B_OCTDN && set.oct < 0) || (b == B_OCTUP && set.oct > 0))
             on = 1;
@@ -673,6 +768,11 @@ static void ui_frame(void)
 {
     ui.frames++;
     cc_take();
+    if (ui.recording) {                          /* REC: every note held while it records */
+        uint32_t w;
+        for (w = 0; w < 4u; w++)
+            ui.rec[w] |= vox.raw_pub[w];
+    }
     ui_buttons();
     ui_encoders();
     snd_shed();

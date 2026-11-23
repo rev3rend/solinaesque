@@ -30,11 +30,12 @@ printed buttons; KNOB 1..4 always edit the four parameters of the page on screen
 | LFO | press | LFO page: rate, vibrato depth, PWM depth, delay (fade-in) |
 | FX | press; press again | FX 1 page (ensemble depth, ensemble rate, flanger amount, flanger rate); pressed on FX 1: FX 2 page (delay time, delay feedback, delay mix, delay tone); pressed on FX 2: back to FX 1 |
 | GLO | press | GLOBAL page: trigger mode (retrig / legato), master tune, MIDI channel, volume |
-| ARP | press | Arpeggiator on / off |
+| ARP | tap | Arpeggiator on / off |
 | ARP | hold (≥ 0.5 s) | ARP page: mode (up, down, up-down, random, as played), rate (divisions of the tempo), octaves 1..4, gate |
 | SEQ | press | Hold (latch) on / off: released keys keep sounding until hold is turned off or a new chord is played |
-| REC | press, play keys, press REC again | Chord memory: the held keys become the chord; then each key plays the chord transposed to it. REC held ≥ 0.5 s clears the chord. Up to 8 chords stored; the chord slot is picked on the ARP page's second view (v1: one chord, see open questions) |
-| PLAY | press | Arp clock: runs on the internal tempo, or follows MIDI clock when it is present; PLAY starts / stops a latched arp |
+| REC | tap, hold keys, tap | Chord memory: the notes held while it records become the chord (semitones above the lowest, up to 8 within 4 octaves; the keys play plain while recording); then each key or MIDI note plays the chord on it. Needs 2+ notes. Kept with the settings over power-off |
+| REC | hold (≥ 0.5 s) | Clear the chord |
+| PLAY | press | The arp's transport: stop / run (a run starts the pattern at once); with the arp off it does nothing. MIDI start / continue / stop do the same |
 | SAVE | tap | The SAVE screen (below); the keys keep playing |
 | SAVE | hold (≥ 0.5 s) | INIT: a plain sound (8' saw, filter open, no LFO or effects), shown as NEW |
 | SAVE screen | PRESETS / ALGORITHM / KNOB 1..4 / SAVE | PRESETS: the user slot (U01..U32; from the current user slot, or U01). ALGORITHM: what to store (the current sound, F1..F16, INIT = clear the slot). KNOB 1: the name's cursor, KNOB 2: its letter (space A..Z 0..9 - .), KNOB 3: a word (STRINGS, PAD, CELLO ...), KNOB 4: clear. SAVE stores (the current sound then comes from that slot; a factory sound or INIT goes into the slot and the sound playing stays); any other button cancels |
@@ -116,13 +117,18 @@ the panel of a 1970s string machine. Every screen is drawn lazily (a signature p
 
 ## Timing and sequencing
 
-- **Arpeggiator:** modes up, down, up-down, random, as played; rate 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32; octaves
-  1..4; gate 10..100 %. Takes the held (or latched) notes as input; with a stored chord, the chord's notes.
-- **Tempo:** internal 40..240 BPM (on the ARP page, PRESETS turns it while ARP is held), or MIDI clock in when it is
-  present (it wins; `MIDI CLOCK` shown). The clock counts samples in the audio ISR.
+- **Arpeggiator:** modes up, down, up-down (the ends once), random, as played (press order); rate 1/4, 1/8, 1/8T,
+  1/16, 1/16T, 1/32; octaves 1..4; gate 10..100 %. It takes the held, latched (HOLD) and pedal notes, chord-expanded,
+  and sounds one at a time through the shared envelope (RETRIG: each step attacks; gaps release). The first key
+  steps at once. Steps land on 32-frame blocks. Measured: 1/16 at 120 BPM steps every 5 512 samples (5 512.5).
+- **Tempo:** internal 40..240 BPM (ARP held + PRESETS; the ARP page's footer shows it), counted in samples in the
+  audio ISR; MIDI clock in (24 a quarter, any channel) takes over while it comes in (CLK on HOME) and gives way half
+  a second after it stops; MIDI start plays the pattern from its top on the next tick, stop silences, continue
+  resumes. Measured: ticks every 1 088 samples give a 1/16 step every 6 528.
 - **Hold:** latches the held notes; a new set of keys pressed after all were released replaces the latched set.
-- **Chord memory:** REC, hold keys, REC: the intervals are stored relative to the lowest note; then one key plays
-  the chord on it (paraphonic: all notes into the shared filter and envelope).
+- **Chord memory:** REC, hold keys, REC: the intervals above the lowest note are stored; then one key (or MIDI
+  note) plays the chord on it, paraphonic (all notes into the shared filter and envelope), and HOLD, the pedal and
+  the arp see the chord's notes. One chord in v1 (the settings hold room for 8).
 
 ## What is stored
 
@@ -155,17 +161,14 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
 
   (CC1 mod wheel, CC64 sustain, CC120 / 123 all off, CC121 reset are handled in the audio ISR; a mapped CC is handed
   to the main loop, which owns the parameters.)
-- **Out (USB):** the keys and the arpeggiator's notes as note on / off on the chosen channel; no clock out in v1.
+- **Out (USB):** the panel keys (as the chord expands them, HOLD keeping them) or, with the arp on, its notes, as note on / off (velocity 100) on the chosen channel (OMNI: channel 1); notes received over MIDI are not echoed (no loops through a DAW); a stop sends every off. No clock out in v1.
 - All notes off on MIDI CC123 and when the channel changes.
 
 ## Open questions
 
-- How many sounding notes the ISR really carries (registers × notes × the filter and effects): measured in the
-  emulator and on the unit, then the ceiling set.
-- Chord memory: one chord in the first build; the 8 stored chords and how to pick them (ARP page second view, or
-  REC + a black key) to be decided once it plays.
 - Whether the brass/organ "second section" of an ARP Omni style instrument is wanted later.
-- The factory sounds' exact values (tuned by ear in the emulator).
+- The factory sounds' exact values (tuned by ear on the unit).
+- More stored chords (8 slots in the settings) and how to pick one.
 - The MASTER pot's real range on the unit (the app reads 0..1023 as silent..full).
 
 ## Out of scope for v1
@@ -204,5 +207,6 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
 7. **Presets (done):** 16 factory sounds (8 redesigned, 8 new), naming on the SAVE screen, ALGORITHM there picks
    what to store (restore a factory sound into a slot, INIT clears one), the edited `*` and HOME held to revert,
    SAVE held for INIT. Tuning the factory sounds by ear on the unit stays open.
-8. **Hold, arpeggiator, chord memory:** latch, the arp with internal tempo and MIDI clock, MIDI note out, chords.
+8. **Hold, arpeggiator, chord memory (done):** HOLD (milestone 1), the arp with its five modes, internal tempo and
+   MIDI clock, PLAY and MIDI start / stop / continue, chord memory (one chord, stored), MIDI note out over USB.
 9. **Polish:** ENVELOPE and FILTER drawings, the CC map in the docs, budgets checked, first install on a unit.
