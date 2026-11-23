@@ -137,7 +137,7 @@ In the platform store (36 records of 4 KB) under this app's id:
 | Record | Contents |
 | --- | --- |
 | Settings | Global page (trigger mode, master tune, MIDI channel, volume), TRS MIDI on/off, the last saved preset (loaded at power-on; record version 2 stores it as a code: factory f, user 64 + u, so the factory count can change; a version 1 record is converted), octave shift, arp settings and tempo, the 8 stored chords |
-| User presets 1 | U01..U16 (a preset is every sound parameter of the pages and the ensemble type, plus an 11-character name: 40 bytes) |
+| User presets 1 | U01..U16 (a preset is every sound parameter of the pages and the ensemble type, plus an 11-character name and the 14-bit parameters' fine parts: 68 bytes; record version 2, version 1's 40-byte presets are read too) |
 | User presets 2 | U17..U32 |
 
 Factory sounds F1..F16 are built in (read-only): CLASSIC, CELLO, VIOLINS, FULL ENS, DARK PAD, BRIGHT, SWELL,
@@ -171,6 +171,15 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
   to the main loop (a counter per control), which owns the parameters. Sending goes the other way through a queue
   to the ISR, which sends it after its notes (one context for MIDI out). A whole new sound (a preset, a revert, INIT,
   a SysEx sound) sends only its Program Change, never all 40 controls.
+- **14-bit NRPN** for the filter, the envelope and the effects (16 parameters: CUTOFF, RESONANCE, ENV AMOUNT, KEY
+  TRACK, ATTACK, DECAY, SUSTAIN, RELEASE, ENS DEPTH, ENS RATE, FLANGER, FLG RATE, DLY TIME, FEEDBACK, DLY MIX,
+  DLY TONE): NRPN 0:<their CC number> (e.g. 0:74 CUTOFF, 0:73 ATTACK), data entry CC 6 (MSB) and CC 38 (LSB),
+  0..16383 across the range. These have real 14-bit resolution inside: a fine part of 1/128 step on top of the
+  panel's steps, used by the engine (the filter's cutoff continuous, times and rates interpolated, percentages
+  scaled), shown on the pages (values between the steps), stored in user presets. Received: NRPN (the MSB alone is
+  taken; an RPN selected by CC 101 / 100 is ignored) and their 7-bit CCs (a whole step). Sent when the panel changes
+  them: NRPN 0:n as CC 99 0, 98 n, 6 MSB, 38 LSB (all four or none), instead of their CC. The panel's knobs move in
+  whole steps (the fine part is kept, and goes at the top of the range).
 - **Program Change:** in, 0..15 load F1..F16 and 16..47 U01..U32 (higher: ignored); out when the panel changes the
   preset (not when a Program Change came in).
 - **Velocity and aftertouch** (GLOBAL 2): VELOCITY OFF (an organ) / LEVEL (each note's own level, velocity / 127;
@@ -180,8 +189,9 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
   from the stronger of channel pressure and the strongest held note's polyphonic pressure, smoothed per block; a
   note's pressure goes with it. The FM-1's own keys have no velocity (100) or pressure.
 - **SysEx presets** (dump.c, `F0 7D 53 4C <cmd> ... F7`): 01 get the current sound (-> 02); 02 <sound> make it current
-  (NEW); 03 <slot> get a user slot (-> 04); 04 <slot> <sound> store it. A sound: 01, the name (12 bytes), 28, each
-  parameter as two 7-bit bytes (v + 128), a checksum (the body's sum & 7F). Malformed frames change nothing.
+  (NEW); 03 <slot> get a user slot (-> 04); 04 <slot> <sound> store it. A sound (format 2, 99 bytes): 02, the name
+  (12 bytes), 28, each parameter as two 7-bit bytes (v + 128), each parameter's fine part (28 bytes), a checksum (the
+  body's sum & 7F); format 1 (01, no fine parts, 71 bytes) is still taken. Malformed frames change nothing.
   `tools/solinaesque_presets.py` backs the 32 user slots up to JSON and restores them.
 - **Out (USB):** the panel keys (as the chord expands them, HOLD keeping them) or, with the arp on, its notes, as note on / off (velocity 100) on the chosen channel (OMNI: channel 1); notes received over MIDI are not echoed (no loops through a DAW); a stop sends every off. No clock out in v1.
 - All notes off on MIDI CC123 and when the channel changes.

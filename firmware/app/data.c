@@ -85,6 +85,15 @@ static uint32_t pv_ms(uint8_t kind, int32_t x)
     return (uint32_t)x;
 }
 
+/* a kind's engine value between steps x and x + 1 (f / 128 of the way): the 14-bit parameters' fine part */
+static uint32_t pv_ms_f(uint8_t kind, int32_t x, uint32_t f)
+{
+    uint32_t a = pv_ms(kind, x);
+    if (!f)
+        return a;
+    return a + (uint32_t)(((uint64_t)(pv_ms(kind, x + 1) - a) * f) >> 7);
+}
+
 static const char *const SHAPE_NAME[3] = {"SAW", "SAW+SQR", "SQUARE"};
 static const char *const TRIG_NAME[2] = {"RETRIG", "LEGATO"};
 static const char *const ARPM_NAME[5] = {"UP", "DOWN", "UP-DOWN", "RANDOM", "PLAYED"};
@@ -93,9 +102,13 @@ static const char *const ARPR_NAME[6] = {"1/4", "1/8", "1/8T", "1/16", "1/16T", 
 static void cat(char *d, const char *s, unsigned max) { str_cpy(d + str_len(d), s, max - str_len(d)); }
 
 /* the text a parameter's value shows: "100%", "250 ms", "1.20 s", "2.5 kHz", "RETRIG", "+12 ct" */
-static void pv_text(char *b, unsigned max, const param_t *p, int32_t x)
+static void pv_text_f(char *b, unsigned max, const param_t *p, int32_t x, uint32_t f);
+static void pv_text(char *b, unsigned max, const param_t *p, int32_t x) { pv_text_f(b, max, p, x, 0); }
+
+/* ... with a fine part: times, rates and the cutoff show the value between the steps */
+static void pv_text_f(char *b, unsigned max, const param_t *p, int32_t x, uint32_t f)
 {
-    uint32_t v = pv_ms(p->kind, x);
+    uint32_t v = pv_ms_f(p->kind, x, f);
     char t[16];
     b[0] = 0;
     switch (p->kind) {
@@ -191,7 +204,19 @@ static int8_t clamp8(int32_t v, const param_t *p) { return (int8_t)(v < p->lo ? 
 typedef struct {
     char name[NAME_LEN];
     int8_t p[NSP_STORED];        /* SP order; the tail beyond NSP is 0 */
+    uint8_t f[NSP_STORED];       /* (user records version 2) the fine part of the 14-bit parameters (HIRES), in
+                                  * 1/128 of a step: the value is p + f / 128; 0 for the others and at the top */
 } preset_t;
+
+/* the parameters with 14-bit resolution (sent and received as NRPN 0:<their CC number>, docs/SPEC.md): the filter,
+ * the envelope, the effects. A bit per parameter index. */
+#define HIRES_MASK (1u << P_CUT | 1u << P_RES | 1u << P_FENV | 1u << P_KTRK | 1u << P_ATK | 1u << P_DEC | \
+                    1u << P_SUS | 1u << P_REL | 1u << P_ENSD | 1u << P_ENSR | 1u << P_FLGA | 1u << P_FLGR | \
+                    1u << P_DTIME | 1u << P_DFB | 1u << P_DMIX | 1u << P_DTONE)
+#define NHIRES 16u
+static const uint8_t HIRES[NHIRES] = {P_CUT, P_RES, P_FENV, P_KTRK, P_ATK, P_DEC, P_SUS, P_REL,
+                                      P_ENSD, P_ENSR, P_FLGA, P_FLGR, P_DTIME, P_DFB, P_DMIX, P_DTONE};
+static int hires(uint32_t i) { return i < 32u && ((HIRES_MASK >> i) & 1u); }
 
 #define NFACT 16
 #define NUSER 32
@@ -257,6 +282,11 @@ static void preset_check(preset_t *p)         /* never trust what was stored: ra
         p->p[i] = clamp8(p->p[i], &SP[i]);
     for (i = NSP; i < NSP_STORED; i++)
         p->p[i] = 0;
+    for (i = 0; i < NSP_STORED; i++)             /* the fine parts: only the 14-bit ones, < 128, none at the top */
+        if (!hires(i) || i >= NSP || p->p[i] >= SP[i].hi)
+            p->f[i] = 0;
+        else if (p->f[i] > 127u)
+            p->f[i] = 127;
     for (i = 0; i < NAME_LEN && !end; i++) {
         if (!p->name[i])
             end = 1;
@@ -294,7 +324,8 @@ static const preset_t *preset_at(uint32_t index)
 static int preset_edited(void)
 {
     const preset_t *p = preset_at(cur_index);
-    return cur_index < NPRESETS && (memcmp(cur.p, p->p, sizeof cur.p) || !str_eq(cur.name, p->name));
+    return cur_index < NPRESETS && (memcmp(cur.p, p->p, sizeof cur.p) || memcmp(cur.f, p->f, sizeof cur.f) ||
+                                    !str_eq(cur.name, p->name));
 }
 
 /* the stored code of a preset (settings' last_preset): stable when the factory count changes. Factory f: f; user u:
@@ -363,7 +394,8 @@ static void settings_check(void)
 #define REC_SETTINGS 0u
 #define REC_USER0 1u
 #define USER_PER_REC 16u
-#define DATA_VER 1u              /* the user presets' records */
+#define DATA_VER 2u              /* the user presets' records: 2 adds each preset's fine parts (68 bytes; 1: 40) */
+#define PRESET_V1 40u            /* a version 1 preset: the name and the parameters */
 #define SET_VER 2u               /* the settings' record: 2 stores last_preset as a code (1: a plain index) */
 typedef struct {
     uint16_t ver, size;          /* DATA_VER; sizeof the payload that follows */
@@ -416,11 +448,17 @@ static void data_load(void)                      /* defaults first, then what wa
     for (r = 0; r < NUSER / USER_PER_REC; r++) {
         memset(&rec_user, 0, sizeof rec_user);
         n = store_load(REC_USER0 + r, APP_ID, &rec_user, sizeof rec_user);
-        if (n >= (int32_t)sizeof(rec_head_t) && rec_user.h.ver >= 1u && rec_user.h.size >= sizeof(preset_t)) {
-            uint32_t have = ((uint32_t)n - sizeof(rec_head_t)) / sizeof(preset_t);
+        if (n >= (int32_t)sizeof(rec_head_t) && rec_user.h.ver >= 1u) {
+            /* version 1 holds 40-byte presets (no fine parts): the first 40 bytes of today's, read one by one */
+            uint32_t psz = rec_user.h.ver == 1u ? PRESET_V1 : sizeof(preset_t);
+            uint32_t have = ((uint32_t)n - sizeof(rec_head_t)) / psz;
+            const uint8_t *raw = (const uint8_t *)&rec_user + sizeof(rec_head_t);
             for (i = 0; i < have && i < USER_PER_REC; i++) {
-                user[r * USER_PER_REC + i] = rec_user.p[i];
-                preset_check(&user[r * USER_PER_REC + i]);
+                preset_t q;
+                memset(&q, 0, sizeof q);
+                memcpy(&q, raw + i * psz, psz < sizeof q ? psz : sizeof q);
+                preset_check(&q);
+                user[r * USER_PER_REC + i] = q;
             }
         }
     }

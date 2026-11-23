@@ -2019,18 +2019,18 @@ static void midi_control(void)
     out_flush();
 
     /* MIDI out: a knob sends its CC, MIDI in is not echoed, CC OUT off sends nothing, a preset change only its PC */
-    tap(B_ENV);
+    tap(B_EDIT);
     out_flush();
-    host_turn(EN_K1, 1);
+    host_turn(EN_K1, -1);
     host_frame();
     host_render(buf_ctl, CTL);
-    check("a knob turned sends its CC (ATTACK: CC 73, its value)", out_next(&st, &d1, &d2) && st == 0xB0u && d1 == 73u &&
-                                                                 d2 == (uint32_t)cc_get(cc_slot[73]) && !out_next(&st, &d1, &d2));
+    check("a knob turned sends its CC (16': CC 12, its value)", out_next(&st, &d1, &d2) && st == 0xB0u && d1 == 12u &&
+                                                              d2 == (uint32_t)cc_get(cc_slot[12]) && !out_next(&st, &d1, &d2));
     cc_in(74, 50);
     host_render(buf_ctl, CTL);
     check("a CC received is not sent back", !out_next(&st, &d1, &d2));
     set.g2[G2_CCOUT] = 0;
-    host_turn(EN_K1, 1);
+    host_turn(EN_K1, -1);
     host_frame();
     host_render(buf_ctl, CTL);
     check("CC OUT off: nothing sent", !out_next(&st, &d1, &d2));
@@ -2071,8 +2071,8 @@ static void midi_control(void)
         host_sysex_in(GET, sizeof GET);
         host_frame();
         host_frame();
-        check("SysEx: get the current sound -> 02 and its body (71 bytes)", sysex_reply(2, &body, &n) && n == SL_BODY);
-        check("SysEx: the body as specified (format 1, the name, 28 parameters)", body[0] == 1u && !memcmp(body + 1, "BRIGHT", 6) &&
+        check("SysEx: get the current sound -> 02 and its body (99 bytes)", sysex_reply(2, &body, &n) && n == SL_BODY && n == 99u);
+        check("SysEx: the body as specified (format 2, the name, 28 parameters)", body[0] == 2u && !memcmp(body + 1, "BRIGHT", 6) &&
                                                                                 body[13] == 28u);
         check("SysEx: a parameter as two 7-bit bytes (16' 40: 168 = 1, 40)", body[14] == 1u && body[15] == 40u);
         check("SysEx: it decodes back to the sound", !sl_decode(body, n, &p) && !memcmp(p.p, cur.p, sizeof p.p) &&
@@ -2210,6 +2210,159 @@ static void midi_control(void)
     power_cycle();
 }
 
+/* ---------------------------------------------------------------- 14-bit NRPN --- */
+static void nrpn_in(uint32_t num, uint32_t v14, int lsb)  /* NRPN 0:num, data entry MSB (and LSB) */
+{
+    host_midi(0xB0, 99, 0);
+    host_midi(0xB0, 98, num);
+    host_midi(0xB0, 6, v14 >> 7);
+    if (lsb)
+        host_midi(0xB0, 38, v14 & 127u);
+    host_render(buf_ctl, CTL);
+    host_frame();
+}
+
+static void nrpn(void)
+{
+    uint32_t st, d1, d2;
+    host_nor_erase();
+    power_cycle();
+    voice(0, 100, 0, 0, 0);
+    out_flush();
+    host_frame();                                         /* (what voice() changed goes out first) */
+    host_render(buf_ctl, CTL);
+    host_render(buf_ctl, CTL);
+    out_flush();
+    nrpn_in(74, 8192, 1);                                 /* CUTOFF, half way */
+    host_render(buf_ctl, CTL);
+    {
+        int got = out_next(&st, &d1, &d2);
+        if (got)
+            printf("  (sent after the NRPN: %02X %u %u)\n", st, d1, d2);
+        check("an NRPN received is not sent back", !got);
+    }
+    printf("  (NRPN 0:74 = 8192: CUTOFF %d + %u/128)\n", cur.p[P_CUT], cur.f[P_CUT]);
+    check("NRPN 0:74 half scale: CUTOFF between steps (63 + ~64/128)", cur.p[P_CUT] == 63 && cur.f[P_CUT] >= 63u &&
+                                                                    cur.f[P_CUT] <= 66u);
+    fm1_in.notes = 1u;
+    host_render(buf, 1024);
+    check("the filter takes the fine part (cutoff index 63.5, not a step)", abs(flt.idx_pub - (63 * 256 + cur.f[P_CUT] * 2)) <= 2);
+    fm1_in.notes = 0;
+    host_render(buf, 1024);
+    nrpn_in(74, 16383, 1);
+    check("NRPN full scale: the top exactly (127, no fine part)", cur.p[P_CUT] == 127 && cur.f[P_CUT] == 0u);
+    nrpn_in(74, 0, 1);
+    check("NRPN zero: the bottom", cur.p[P_CUT] == 0 && cur.f[P_CUT] == 0u);
+    nrpn_in(73, 100u << 7, 0);                            /* ATTACK, data entry MSB only */
+    check("NRPN with the MSB only: taken (ATTACK ~99)", cur.p[P_ATK] >= 98 && cur.p[P_ATK] <= 100);
+    host_midi(0xB0, 101, 0);                              /* an RPN (pitch bend range): its data entry is not ours */
+    host_midi(0xB0, 100, 0);
+    host_midi(0xB0, 6, 12);
+    host_render(buf_ctl, CTL);
+    host_frame();
+    check("data entry for an RPN: ignored", cur.p[P_ATK] >= 98);
+    nrpn_in(20, 0, 1);                                    /* ENV AMOUNT: -100 at 0, +100 at 16383 */
+    check("NRPN on a bipolar parameter (ENV AMOUNT 0 -> -100)", cur.p[P_FENV] == -100 && cur.f[P_FENV] == 0u);
+    out_flush();
+
+    {   /* the fine part reaches the engine: between the steps */
+        int32_t a0, a1, ah;
+        uint32_t m0, m1, mh;
+        cur.p[P_ATK] = 80, cur.f[P_ATK] = 0;
+        snd_update();
+        a0 = snd.atk_inc;
+        cur.p[P_ATK] = 81;
+        snd_update();
+        a1 = snd.atk_inc;
+        cur.p[P_ATK] = 80, cur.f[P_ATK] = 64;
+        snd_update();
+        ah = snd.atk_inc;
+        check("ATTACK 80 + 64/128: the attack between steps 80 and 81", ah < a0 && ah > a1);
+        cur.p[P_SUS] = 50, cur.f[P_SUS] = 64;
+        snd_update();
+        check("SUSTAIN 50 + 64/128: 50.5 %", snd.sus > ENV_ONE / 2 && snd.sus < ENV_ONE / 2 + ENV_ONE / 100);
+        cur.p[P_DMIX] = 20, cur.f[P_DMIX] = 0;
+        snd_update();
+        m0 = (uint32_t)fxp.dly_mix;
+        cur.f[P_DMIX] = 64;
+        snd_update();
+        mh = (uint32_t)fxp.dly_mix;
+        cur.p[P_DMIX] = 21, cur.f[P_DMIX] = 0;
+        snd_update();
+        m1 = (uint32_t)fxp.dly_mix;
+        check("DLY MIX 20 + 64/128: the mix between 20 and 21 %", mh > m0 && mh < m1);
+        {
+            char b[24];
+            pv_text_f(b, sizeof b, &SP[P_ATK], 80, 64);
+            printf("  (ATTACK 80 shows %u ms, 80 + 64/128 shows \"%s\", 81 shows %u ms)\n", pv_ms(K_ATK, 80), b, pv_ms(K_ATK, 81));
+            check("the page shows the value between the steps", atoi(b) > (int)pv_ms(K_ATK, 80) && atoi(b) < (int)pv_ms(K_ATK, 81));
+        }
+        voice(0, 100, 0, 0, 0);
+    }
+
+    /* out: a knob turned on a 14-bit parameter sends NRPN 0:<CC>, 99 98 6 38, and no CC */
+    tap(B_SCL);
+    host_render(buf_ctl, CTL);                            /* (the queue drained first) */
+    host_render(buf_ctl, CTL);
+    out_flush();
+    host_turn(EN_K1, -1);                                 /* CUTOFF 127 -> 126 */
+    host_frame();
+    host_render(buf_ctl, CTL);
+    {
+        uint32_t v = hr_get(0), ok = 1;
+        ok &= out_next(&st, &d1, &d2) && st == 0xB0u && d1 == 99u && d2 == 0u;
+        ok &= out_next(&st, &d1, &d2) && d1 == 98u && d2 == 74u;
+        ok &= out_next(&st, &d1, &d2) && d1 == 6u && d2 == v >> 7;
+        ok &= out_next(&st, &d1, &d2) && d1 == 38u && d2 == (v & 127u);
+        check("CUTOFF turned: NRPN 0:74 out (99 0, 98 74, 6 MSB, 38 LSB), no CC 74", ok && !out_next(&st, &d1, &d2));
+    }
+    tap(B_HOME);
+
+    /* stored: the fine part over SAVE and a power cycle; version 1 records still read */
+    nrpn_in(74, 8192, 1);
+    tap(B_SAVE);
+    host_turn(EN_PRESET, 2);                              /* U03 */
+    host_frame();
+    tap(B_SAVE);
+    power_cycle();
+    check("the fine part kept: SAVE, power cycle (U03 CUTOFF 63 + ~64/128)", cur_index == NFACT + 2u && cur.p[P_CUT] == 63 &&
+                                                                           cur.f[P_CUT] >= 63u);
+    {   /* a version 1 user record: 16 presets of 40 bytes (no fine parts) */
+        static uint8_t raw[4 + 16 * 40];
+        uint32_t i;
+        memset(raw, 0, sizeof raw);
+        raw[0] = 1, raw[1] = 0;                           /* ver 1 */
+        raw[2] = (uint8_t)(640 & 0xFF), raw[3] = (uint8_t)(640 >> 8);
+        for (i = 0; i < 16u; i++) {
+            preset_t q = FACTORY[i];
+            memcpy(raw + 4 + i * 40, &q, 40);
+        }
+        memcpy(raw + 4 + 3 * 40, "OLD ONE", 8);
+        store_save(REC_USER0, APP_ID, raw, sizeof raw);
+        power_cycle();
+        check("a version 1 user record: its presets read, fine parts 0", str_eq(user[3].name, "OLD ONE") &&
+                                                                        user[3].p[P_CUT] == FACTORY[3].p[P_CUT] &&
+                                                                        user[3].f[P_CUT] == 0u && str_eq(user[5].name, "BRIGHT"));
+    }
+    {   /* SysEx: format 2 carries the fine parts; format 1 is still taken */
+        uint8_t f[8 + SL_BODY + 2], b1[SL_BODY1];
+        preset_t p = FACTORY[0], q;
+        uint32_t len, i, sum = 0;
+        p.f[P_CUT] = 77;
+        len = sl_encode(&p, f);
+        check("SysEx format 2: the fine parts there and back", len == SL_BODY && !sl_decode(f, len, &q) && q.f[P_CUT] == 77u);
+        memcpy(b1, f, SL_BODY1 - 1u);                     /* format 1: no fine parts, its own checksum */
+        b1[0] = 1;
+        for (i = 0; i + 1u < SL_BODY1; i++)
+            sum += b1[i];
+        b1[SL_BODY1 - 1u] = (uint8_t)(sum & 0x7Fu);
+        check("SysEx format 1: still taken (fine parts 0)", !sl_decode(b1, SL_BODY1, &q) && q.f[P_CUT] == 0u &&
+                                                           q.p[P_CUT] == FACTORY[0].p[P_CUT]);
+    }
+    host_nor_erase();
+    power_cycle();
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -2221,6 +2374,7 @@ int main(void)
     sequencer();
     reader();
     midi_control();
+    nrpn();
     sound();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

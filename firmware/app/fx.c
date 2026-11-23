@@ -64,12 +64,12 @@ static int16_t dly_buf[2][DLY_LEN] __attribute__((section(".pool")));
 /* the parameters, set by the main loop (sound.c snd_update), integers only: 32-bit stores, read whole by the ISR */
 static struct {
     int32_t ens_type;            /* 0 OFF, 1 I, 2 II, 3 III, 4 FLANGE */
-    int32_t ens_depth;           /* ENS DEPTH % */
+    int32_t ens_depth;           /* ENS DEPTH %, x 128 (14-bit) */
     uint32_t ens_inc;            /* the slow sine's phase step per block (the fast one: 10x) */
-    int32_t flg_amt;             /* FLANGER % */
+    int32_t flg_amt;             /* FLANGER %, x 128 */
     uint32_t flg_inc;            /* the flanger's triangle, per block */
     int32_t dly_len;             /* DLY TIME in samples */
-    int32_t dly_fb, dly_mix, dly_tone;   /* % */
+    int32_t dly_fb, dly_mix, dly_tone;   /* %, x 128 */
 } fxp;
 
 static struct {
@@ -108,14 +108,14 @@ static FM1_FPU __attribute__((noinline)) void fx_block(const int32_t *in, int32_
     uint32_t i;
     if (type < 0 || type > 4)
         type = 0;
-    if (type == 4 && flg < 60)
-        flg = 60;
+    if (type == 4 && flg < 60 * 128)
+        flg = 60 * 128;
 
     /* ---- ensemble */
     if (type >= 1 && type <= 3) {
         /* equal power: the dry share a and the taps' b (two taps, 1 and 1/2) so that a^2 + 1.25 b^2 = 1: the swept,
          * incoherent sum keeps the level of the dry sound (at ENS DEPTH 0 the still taps add up ~4 dB louder) */
-        const float ms = FS / 1000.0f, k = (float)fxp.ens_depth * (1.0f / 60.0f);
+        const float ms = FS / 1000.0f, k = (float)fxp.ens_depth * (1.0f / (60.0f * 128.0f));
         const float a = ENS_DRY[type], b = ENS_TAP[type];
         float base = ENS_BASE[type] * ms, ds = ENS_SLOW[type] * ms * k, df = ENS_FAST[type] * ms * k;
         float d0[3], dd[3];
@@ -150,7 +150,7 @@ static FM1_FPU __attribute__((noinline)) void fx_block(const int32_t *in, int32_
 
     /* ---- flanger */
     if (flg > 0) {
-        const float ms = FS / 1000.0f, amt = (float)flg * 0.01f, fb = 0.7f * amt, mix = 0.7f * amt;
+        const float ms = FS / 1000.0f, amt = (float)flg * (0.01f / 128.0f), fb = 0.7f * amt, mix = 0.7f * amt;
         uint32_t w = fxs.flg_w, p0 = fxs.flg_ph, p1 = p0 + fxp.flg_inc;
         float tl0, tl1, tr0, tr1, dl, dr, sl, sr;
         /* a triangle 0..1 from a phase: |2 x - 1|, and the other side half a cycle later */
@@ -211,8 +211,8 @@ static FM1_FPU __attribute__((noinline)) void fx_block(const int32_t *in, int32_
             fxs.dly_cur = (float)len;            /* (no glide in from an old time: it starts where it is set) */
             fxs.dly_on = 0;
         } else if (mixp > 0) {
-            const float fb = (float)fxp.dly_fb * 0.01f, mix = (float)mixp * 0.01f;
-            const float c = 0.05f + 0.95f * (float)fxp.dly_tone * 0.01f * (float)fxp.dly_tone * 0.01f;
+            const float fb = (float)fxp.dly_fb * (0.01f / 128.0f), mix = (float)mixp * (0.01f / 128.0f);
+            const float t = (float)fxp.dly_tone * (0.01f / 128.0f), c = 0.05f + 0.95f * t * t;
             float cur = fxs.dly_cur, lpl = fxs.dly_lp[0], lpr = fxs.dly_lp[1];
             const float target = (float)len;
             if (!fxs.dly_on)                     /* just turned on: no glide from the time it had while off */

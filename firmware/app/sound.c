@@ -46,7 +46,8 @@ static struct {
     int32_t rr[12];              /* the BLEP's reciprocal of each pitch class's step: 2^30 / (inc >> 12) */
     int32_t w1, w2;              /* SHAPE: osc = (w1 x saw(p) - w2 x saw(p + pw)) / 256 (w2 0: a plain saw) */
     uint32_t pw;                 /* SHAPE: the second saw's offset, the pulse width (2^31: a square) */
-    int32_t f_cut, f_res, f_env, f_kt;   /* the filter: CUTOFF 0..127, RESONANCE %, ENV AMOUNT -100..100 %, KEY TRACK % */
+    int32_t f_cut, f_res, f_env, f_kt;   /* the filter, x 128 (14-bit): CUTOFF 0..127, RESONANCE %, ENV AMOUNT
+                                          * -100..100 %, KEY TRACK % */
     uint32_t lfo_inc;            /* the LFO's phase step per block */
     int32_t vib_c, pwm;          /* VIBRATO as cents (0..50: 100 % is +-50), PWM % (100 %: the width +-40 %) */
     int32_t lfo_fade;            /* the LFO's fade-in per block after an attack, Q16 (65536: at once) */
@@ -135,9 +136,10 @@ static struct {
  * highest note's distance from C4 (100 %: the cutoff follows the keys); the coefficients once per block. */
 static FM1_FPU __attribute__((noinline)) void filt_block(int32_t *mix, uint32_t n, int32_t env)
 {
-    float idx = (float)snd.f_cut + (float)snd.f_env * 1.27f * ((float)env * (1.0f / ENV_ONE)) * (float)flt.env_q7 *
-                    (1.0f / 128.0f) +
-                (float)snd.f_kt * 0.01f * CUT_PER_SEMI * (float)((int32_t)flt.top - 60) + (float)flt.vel_steps +
+    const float q = 1.0f / 128.0f;              /* (the filter's parameters come x 128: 14-bit) */
+    float idx = (float)snd.f_cut * q +
+                (float)snd.f_env * q * 1.27f * ((float)env * (1.0f / ENV_ONE)) * (float)flt.env_q7 * q +
+                (float)snd.f_kt * q * 0.01f * CUT_PER_SEMI * (float)((int32_t)flt.top - 60) + (float)flt.vel_steps +
                 (float)flt.at_steps;
     float g, k, a1, a2, a3, ic1 = flt.ic1, ic2 = flt.ic2, fr;
     int32_t i;
@@ -146,7 +148,7 @@ static FM1_FPU __attribute__((noinline)) void filt_block(int32_t *mix, uint32_t 
     i = (int32_t)idx;
     fr = idx - (float)i;
     g = i < 127 ? FILT_G[i] + (FILT_G[i + 1] - FILT_G[i]) * fr : FILT_G[127];
-    k = 2.0f - 1.96f * 0.01f * (float)snd.f_res;          /* damping: 2 (none) .. 0.04 (Q 25, near ringing) */
+    k = 2.0f - 1.96f * 0.01f * q * (float)snd.f_res;      /* damping: 2 (none) .. 0.04 (Q 25, near ringing) */
     a1 = 1.0f / (1.0f + g * (g + k));
     a2 = g * a1;
     a3 = g * a2;
@@ -202,6 +204,9 @@ static struct {
     volatile uint8_t cc_val[NCC];
     volatile uint8_t cc_seq[NCC];
     volatile uint8_t pc_val, pc_seq;     /* Program Change, handed over the same way */
+    volatile uint16_t nr_val[NHIRES];    /* the 14-bit parameters by NRPN (data entry), and their counters */
+    volatile uint8_t nr_seq[NHIRES];
+    uint8_t nrpn_msb, nrpn_lsb, nrpn_on, nr_msb;   /* the NRPN selected (99 / 98; 101 / 100 deselect), data MSB */
     /* velocity and aftertouch (ISR state) */
     uint8_t vel[128];                    /* each MIDI note's velocity while it is down (0: from the panel / derived) */
     uint8_t last_vel;                    /* the latest note's (the panel: 100), for notes without their own */
@@ -277,6 +282,15 @@ static const uint8_t CC_TGT[NCC] = {P_R16, P_R8, P_R4, P_SHAPE, P_CUT, P_RES, P_
                                     CT_HOLD, CT_PLAY, CT_OCT,
                                     CT_G2 + G2_VEL, CT_G2 + G2_AT, CT_G2 + G2_ATD};
 static uint8_t cc_slot[128];     /* CC number -> its index in CC_NUM, 0xFF none (snd_init) */
+static uint32_t CC_NUM_OF(uint32_t target)      /* a sound parameter's CC number (the map's first for it) */
+{
+    uint32_t k;
+    for (k = 0; k < NCC; k++)
+        if (CC_TGT[k] == target)
+            return CC_NUM[k];
+    return 0;
+}
+static uint8_t hr_slot[128];     /* NRPN 0:n (n: the CC number) -> its index in HIRES, 0xFF none (snd_init) */
 
 static const uint8_t *note_oct_tbl(void)        /* n / 12 without a divide in the ISR */
 {
@@ -383,6 +397,21 @@ static __attribute__((noinline)) void snd_midi(uint32_t pkt)
         memset(vox.pat, 0, sizeof vox.pat);
         vox.pat_max = 0;
         bits_clear(vox.sus);
+    } else if (st == 0xB0u && (d1 == 99u || d1 == 98u || d1 == 101u || d1 == 100u)) {   /* NRPN / RPN number */
+        if (d1 == 99u)
+            vox.nrpn_msb = (uint8_t)d2;
+        else if (d1 == 98u)
+            vox.nrpn_lsb = (uint8_t)d2;
+        vox.nrpn_on = d1 >= 98u && d1 <= 99u;   /* (an RPN number: data entry is not ours) */
+    } else if (st == 0xB0u && (d1 == 6u || d1 == 38u)) {   /* data entry: the 14-bit parameters (NRPN 0:<CC>) */
+        uint32_t h = vox.nrpn_on && vox.nrpn_msb == 0u ? hr_slot[vox.nrpn_lsb & 0x7Fu] : 0xFFu;
+        if (h != 0xFFu) {
+            if (d1 == 6u)
+                vox.nr_msb = (uint8_t)d2;
+            vox.nr_val[h] = (uint16_t)(vox.nr_msb << 7 | (d1 == 38u ? d2 : 0u));   /* MSB alone: its 7 bits */
+            RING_PUBLISH();
+            vox.nr_seq[h]++;
+        }
     } else if (st == 0xB0u && cc_slot[d1] != 0xFFu) {   /* the CC map: handed to the main loop (cc_take) */
         uint32_t k = cc_slot[d1];
         vox.cc_val[k] = (uint8_t)d2;
@@ -738,28 +767,29 @@ static void snd_update(void)
     snd.amp16 = cur.p[P_R16] * REG_AMP / 100;
     snd.amp8 = cur.p[P_R8] * REG_AMP / 100;
     snd.amp4 = cur.p[P_R4] * REG_AMP / 100;
-    ms = pv_ms(K_ATK, cur.p[P_ATK]);
+    ms = pv_ms_f(K_ATK, cur.p[P_ATK], cur.f[P_ATK]);   /* (the 14-bit parameters: between the steps, f / 128) */
     snd.atk_inc = (int32_t)(ATK_K / ms);
     if (snd.atk_inc < 1)
         snd.atk_inc = 1;
-    ms = pv_ms(K_DEC, cur.p[P_DEC]);
+    ms = pv_ms_f(K_DEC, cur.p[P_DEC], cur.f[P_DEC]);
     snd.dec_coef = (int32_t)(COEF_K / ms);
     snd.dec_coef = snd.dec_coef > 32767 ? 32767 : snd.dec_coef < 1 ? 1 : snd.dec_coef;
-    ms = pv_ms(K_REL, cur.p[P_REL]);
+    ms = pv_ms_f(K_REL, cur.p[P_REL], cur.f[P_REL]);
     snd.rel_coef = (int32_t)(COEF_K / ms);
     snd.rel_coef = snd.rel_coef > 32767 ? 32767 : snd.rel_coef < 1 ? 1 : snd.rel_coef;
-    snd.sus = (ENV_ONE >> 2) * cur.p[P_SUS] / 25;   /* exact at 25, 50, 100 %; 2^22 x 100 fits 31 bits */
+    snd.sus = (ENV_ONE >> 9) * (cur.p[P_SUS] * 128 + cur.f[P_SUS]) / 25;   /* % x 128: exact at 25, 50, 100 %;
+                                                                               * 2^15 x 12 800 fits 31 bits */
     snd.gain = set.g[G_VOL] * master_q8 / 100;
     /* the effects (fx.c): integers only; a rate in mHz is a phase step per block of mHz x 2^32 x CTL / 1000 / FS */
     fxp.ens_type = cur.p[P_ENS];
-    fxp.ens_depth = cur.p[P_ENSD];
-    fxp.ens_inc = pv_ms(K_HZ, cur.p[P_ENSR]) * 3117u;
-    fxp.flg_amt = cur.p[P_FLGA];
-    fxp.flg_inc = pv_ms(K_HZ, cur.p[P_FLGR]) * 3117u;
-    fxp.dly_len = (int32_t)(pv_ms(K_DLY, cur.p[P_DTIME]) * (FS / 100u) / 10u);   /* ms x 44.1 */
-    fxp.dly_fb = cur.p[P_DFB];
-    fxp.dly_mix = cur.p[P_DMIX];
-    fxp.dly_tone = cur.p[P_DTONE];
+    fxp.ens_depth = cur.p[P_ENSD] * 128 + cur.f[P_ENSD];     /* the percentages x 128 (14-bit) */
+    fxp.ens_inc = pv_ms_f(K_HZ, cur.p[P_ENSR], cur.f[P_ENSR]) * 3117u;
+    fxp.flg_amt = cur.p[P_FLGA] * 128 + cur.f[P_FLGA];
+    fxp.flg_inc = pv_ms_f(K_HZ, cur.p[P_FLGR], cur.f[P_FLGR]) * 3117u;
+    fxp.dly_len = (int32_t)(pv_ms_f(K_DLY, cur.p[P_DTIME], cur.f[P_DTIME]) * (FS / 100u) / 10u);   /* ms x 44.1 */
+    fxp.dly_fb = cur.p[P_DFB] * 128 + cur.f[P_DFB];
+    fxp.dly_mix = cur.p[P_DMIX] * 128 + cur.f[P_DMIX];
+    fxp.dly_tone = cur.p[P_DTONE] * 128 + cur.f[P_DTONE];
     snd.lfo_inc = pv_ms(K_HZ, cur.p[P_LRATE]) * 3117u;     /* mHz -> a phase step per block (fx.c's rule) */
     snd.vib_c = (cur.p[P_VIB] * 50 + 50) / 100;   /* (the divide here, not in the ISR) */
     snd.pwm = cur.p[P_PWM];
@@ -785,10 +815,10 @@ static void snd_update(void)
     snd.at_mode = (uint32_t)set.g2[G2_AT];
     snd.at_vib = set.g2[G2_ATD] * 50 / 100;
     snd.at_cut = set.g2[G2_ATD] * 64 / 100;
-    snd.f_cut = cur.p[P_CUT];
-    snd.f_res = cur.p[P_RES];
-    snd.f_env = cur.p[P_FENV];
-    snd.f_kt = cur.p[P_KTRK];
+    snd.f_cut = cur.p[P_CUT] * 128 + cur.f[P_CUT];         /* x 128: the filter takes the fine parts */
+    snd.f_res = cur.p[P_RES] * 128 + cur.f[P_RES];
+    snd.f_env = cur.p[P_FENV] * 128 + cur.f[P_FENV];
+    snd.f_kt = cur.p[P_KTRK] * 128 + cur.f[P_KTRK];
     snd.legato = set.g[G_TRIG] ? 1u : 0u;
     snd.midi_ch = (uint32_t)set.g[G_MIDICH];
     snd.key_base = (uint32_t)((int32_t)NOTE_KEY0 + 12 * set.oct);
@@ -818,6 +848,13 @@ static void snd_init(void)
     memset(cc_slot, 0xFF, sizeof cc_slot);
     for (k = 0; k < NCC; k++)
         cc_slot[CC_NUM[k]] = (uint8_t)k;
+    memset(hr_slot, 0xFF, sizeof hr_slot);
+    for (k = 0; k < NCC; k++) {                  /* a 14-bit parameter answers to NRPN 0:<its CC number> */
+        uint32_t h;
+        for (h = 0; h < NHIRES; h++)
+            if (CC_TGT[k] == HIRES[h])
+                hr_slot[CC_NUM[k]] = (uint8_t)h;
+    }
     vox.last_vel = 100;
     vox.vel_env_q7 = 128;
     flt.env_q7 = 128;

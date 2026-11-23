@@ -75,6 +75,19 @@ static const param_t *row_param(uint32_t page, uint32_t row, int8_t **val)
     return &GP[(page == PG_GLO ? 0u : 4u) + row];
 }
 
+/* a row's fine part (the 14-bit sound parameters; 0 for the rest) */
+static uint32_t row_fine(uint32_t page, uint32_t row)
+{
+    return page < PG_ARP ? cur.f[page * 4u + row] : 0u;
+}
+
+/* the fine part goes when a parameter reaches its top (the value is p + f / 128) */
+static void fine_fix(uint32_t i)
+{
+    if (i < NSP && cur.p[i] >= SP[i].hi)
+        cur.f[i] = 0;
+}
+
 static void page_open(uint32_t page)
 {
     if ((ui.page == PG_GLO || ui.page == PG_ARP || ui.page == PG_MIDI) && page != ui.page && ui.set_dirty) {
@@ -266,7 +279,7 @@ static void draw_page_rows(uint32_t r0)          /* two rows (r0, r0 + 1) */
         x = cv_text(34, y + 4, &AF_M, p->name, p->live ? T_TEXT : T_MID);
         if (!p->live && page_live)               /* one row of a working page not built yet (a whole page: its head) */
             cv_text(x + 8, y + 6, &AF_S, "SOON", T_ACCENT);
-        pv_text(b, sizeof b, p, *v);
+        pv_text_f(b, sizeof b, p, *v, row_fine(ui.page, r));
         cv_text_r(230, y + 4, &AF_M, b, p->live ? T_THEME : T_MID, T_BG);
         draw_bar_h(34, y + bar, 196, bh, *v - (p->kind == K_BIP || p->kind == K_TUNE ? 0 : p->lo),
                    p->kind == K_BIP || p->kind == K_TUNE ? p->hi : p->hi - p->lo,
@@ -492,7 +505,8 @@ static void ui_draw(void)
             int8_t *v0, *v1;
             row_param(ui.page, 2u * i, &v0);
             row_param(ui.page, 2u * i + 1u, &v1);
-            s[1u + i] = fnv(fnv(fnv(h0, ui.page), (uint32_t)*v0), (uint32_t)*v1);
+            s[1u + i] = fnv(fnv(fnv(fnv(fnv(h0, ui.page), (uint32_t)*v0), (uint32_t)*v1), row_fine(ui.page, 2u * i)),
+                            row_fine(ui.page, 2u * i + 1u));
         }
         s[3] = fnv(fnv(fnv(m, ui.page == PG_ARP ? set.bpm : 0u), arp.ext_pub), arp.halt_pub);
         if (all || s[0] != ui.sig[0])
@@ -798,11 +812,14 @@ static void ui_encoders(void)
         if (ui.page == PG_HOME) {
             static const uint8_t P[4] = {P_R16, P_R8, P_R4, P_CUT};
             cur.p[P[r]] = clamp8(cur.p[P[r]] + s, &SP[P[r]]);
+            fine_fix(P[r]);
         } else {
             int8_t *v;
             const param_t *p = row_param(ui.page, (uint32_t)r, &v);
             int32_t old = *v;
             *v = clamp8(*v + s, p);
+            if (ui.page < PG_ARP)
+                fine_fix(ui.page * 4u + (uint32_t)r);
             if (ui.page >= PG_ARP && *v != old) {
                 ui.set_dirty = 1;
                 if (ui.page == PG_GLO && r == G_MIDICH)
@@ -888,8 +905,10 @@ static void cc_set(uint32_t k, int32_t v)
     const param_t *p = t < CT_G ? &SP[t] : t < CT_G2 ? &GP[t - CT_G] : t < CT_TEMPO ? &GP2[t - CT_G2] : 0;
     if (p) {
         int8_t x = clamp8(p->lo + (v * (p->hi - p->lo) + 63) / 127, p);
-        if (t < CT_G)
+        if (t < CT_G) {
             cur.p[t] = x;
+            cur.f[t] = 0;                        /* (a 7-bit CC: a whole step; NRPN carries the fine part) */
+        }
         else if (t < CT_G2) {
             ui.set_dirty |= set.g[t - CT_G] != x;
             set.g[t - CT_G] = x;
@@ -918,11 +937,28 @@ static void cc_set(uint32_t k, int32_t v)
 }
 
 static struct {
-    uint8_t seen[NCC], pc_seen;  /* the ISR's counters as taken */
+    uint8_t seen[NCC], pc_seen, nr_seen[NHIRES];   /* the ISR's counters as taken */
     int8_t out[NCC];             /* each control's value as last sent (or received: no echo), -1 not yet */
+    uint16_t out14[NHIRES];      /* the 14-bit parameters' NRPN values as last sent (or received) */
     uint32_t epoch;
     uint8_t index, ready;
 } ccs;
+
+/* a 14-bit parameter as an NRPN value, 0..16383 across its range, and back */
+static uint32_t hr_get(uint32_t h)
+{
+    uint32_t i = HIRES[h], range = (uint32_t)(SP[i].hi - SP[i].lo) * 128u;
+    uint32_t x = (uint32_t)(cur.p[i] - SP[i].lo) * 128u + cur.f[i];
+    return (x * 16383u + range / 2u) / range;
+}
+
+static void hr_set(uint32_t h, uint32_t v)
+{
+    uint32_t i = HIRES[h], range = (uint32_t)(SP[i].hi - SP[i].lo) * 128u, x = (v * range + 8191u) / 16383u;
+    cur.p[i] = (int8_t)(SP[i].lo + (int32_t)(x >> 7));
+    cur.f[i] = (uint8_t)(x & 127u);
+    fine_fix(i);
+}
 
 /* what the ISR received, applied here, where the parameters live; no echo of it on MIDI out */
 static void cc_take(void)
@@ -934,7 +970,23 @@ static void cc_take(void)
         if (c != ccs.seen[k]) {
             ccs.seen[k] = c;
             cc_set(k, vox.cc_val[k]);
-            ccs.out[k] = (int8_t)cc_get(k);      /* (what MIDI set is not sent back) */
+            ccs.out[k] = (int8_t)cc_get(k);      /* (what MIDI set is not sent back: as CC, nor as NRPN) */
+            if (CC_TGT[k] < CT_G && hires(CC_TGT[k])) {
+                uint32_t h;
+                for (h = 0; h < NHIRES; h++)
+                    if (HIRES[h] == CC_TGT[k])
+                        ccs.out14[h] = (uint16_t)hr_get(h);
+            }
+            any = 1;
+        }
+    }
+    for (k = 0; k < NHIRES; k++) {               /* NRPN: the 14-bit parameters */
+        uint8_t c = vox.nr_seq[k];
+        if (c != ccs.nr_seen[k]) {
+            ccs.nr_seen[k] = c;
+            hr_set(k, vox.nr_val[k]);
+            ccs.out14[k] = (uint16_t)hr_get(k);  /* (not sent back) */
+            ccs.out[cc_slot[CC_NUM_OF(HIRES[k])]] = (int8_t)cc_get(cc_slot[CC_NUM_OF(HIRES[k])]);
             any = 1;
         }
     }
@@ -946,6 +998,8 @@ static void cc_take(void)
             ccs.epoch = snd_epoch;
             for (k = 0; k < NCC; k++)
                 ccs.out[k] = (int8_t)cc_get(k);
+            for (k = 0; k < NHIRES; k++)
+                ccs.out14[k] = (uint16_t)hr_get(k);
         }
     }
     if (any)
@@ -962,6 +1016,8 @@ static void cc_out(void)
             ccq_push(0xC0u | ch, cur_index, 0);
         for (k = 0; k < NCC; k++)
             ccs.out[k] = (int8_t)cc_get(k);
+        for (k = 0; k < NHIRES; k++)
+            ccs.out14[k] = (uint16_t)hr_get(k);
         ccs.epoch = snd_epoch;
         ccs.index = cur_index;
         ccs.ready = 1;
@@ -969,8 +1025,26 @@ static void cc_out(void)
     }
     for (k = 0; k < NCC; k++) {
         int32_t v = cc_get(k);
+        if (CC_TGT[k] < CT_G && hires(CC_TGT[k])) {   /* the 14-bit ones go as NRPN (below) */
+            ccs.out[k] = (int8_t)v;
+            continue;
+        }
         if (v != ccs.out[k] && (!send || !ccq_push(0xB0u | ch, CC_NUM[k], (uint32_t)v)))
             ccs.out[k] = (int8_t)v;              /* (queue full: sent on a later frame) */
+    }
+    for (k = 0; k < NHIRES; k++) {               /* NRPN 0:<CC number>, 14-bit data entry: 99 98 6 38 */
+        uint32_t v = hr_get(k);
+        if (v == ccs.out14[k])
+            continue;
+        if (send) {
+            if (CCQ - (ccq.w - ccq.r) < 4u)      /* (all four or none: the rest on a later frame) */
+                break;
+            ccq_push(0xB0u | ch, 99, 0);
+            ccq_push(0xB0u | ch, 98, CC_NUM_OF(HIRES[k]));
+            ccq_push(0xB0u | ch, 6, v >> 7);
+            ccq_push(0xB0u | ch, 38, v & 127u);
+        }
+        ccs.out14[k] = (uint16_t)v;
     }
 }
 
