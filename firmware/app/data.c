@@ -24,8 +24,8 @@ enum { P_R16, P_R8, P_R4, P_SHAPE, P_CUT, P_RES, P_FENV, P_KTRK, P_ATK, P_DEC, P
 #define NSP_STORED 28            /* room in a stored preset for parameters added later */
 static const param_t SP[NSP] = {
     {"16'", K_PCT, 0, 100, 70, 1},     {"8'", K_PCT, 0, 100, 100, 1},    {"4'", K_PCT, 0, 100, 40, 1},
-    {"SHAPE", K_SHAPE, 0, 99, 0, 1},   {"CUTOFF", K_CUT, 0, 127, 127, 0}, {"RESONANCE", K_PCT, 0, 100, 0, 0},
-    {"ENV AMOUNT", K_BIP, -100, 100, 0, 0}, {"KEY TRACK", K_PCT, 0, 100, 0, 0},
+    {"SHAPE", K_SHAPE, 0, 99, 0, 1},   {"CUTOFF", K_CUT, 0, 127, 127, 1}, {"RESONANCE", K_PCT, 0, 100, 0, 1},
+    {"ENV AMOUNT", K_BIP, -100, 100, 0, 1}, {"KEY TRACK", K_PCT, 0, 100, 0, 1},
     {"ATTACK", K_ATK, 0, 127, 70, 1},  {"DECAY", K_DEC, 0, 127, 64, 1},  {"SUSTAIN", K_PCT, 0, 100, 100, 1},
     {"RELEASE", K_REL, 0, 127, 70, 1},
     {"RATE", K_HZ, 0, 127, 64, 0},     {"VIBRATO", K_PCT, 0, 100, 0, 0}, {"PWM", K_PCT, 0, 100, 0, 0},

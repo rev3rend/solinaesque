@@ -8,7 +8,8 @@
  * clicking; the shared envelope (ADSR, RETRIG or LEGATO) does the shaping, and the notes that were down when the last
  * key went up keep sounding through its release (paraphonic: one envelope for all).
  * The registers are band-limited saws (PolyBLEP), blended by SHAPE towards a square and a narrowing pulse (two saws
- * apart). No filter, LFO or effects yet: they come with their milestones (docs/SPEC.md). Main loop -> ISR: snd
+ * apart); the sum goes through one resonant low-pass (filt_block: cutoff, resonance, envelope amount, key tracking)
+ * and then the envelope. No LFO or effects yet: they come with their milestones (docs/SPEC.md). Main loop -> ISR: snd
  * (derived numbers, 32-bit stores) and the volatile requests; ISR -> main loop: the published gated set and the
  * sounding count. */
 
@@ -42,6 +43,7 @@ static struct {
     int32_t rr[12];              /* the BLEP's reciprocal of each pitch class's step: 2^30 / (inc >> 12) */
     int32_t w1, w2;              /* SHAPE: osc = (w1 x saw(p) - w2 x saw(p + pw)) / 256 (w2 0: a plain saw) */
     uint32_t pw;                 /* SHAPE: the second saw's offset, the pulse width (2^31: a square) */
+    int32_t f_cut, f_res, f_env, f_kt;   /* the filter: CUTOFF 0..127, RESONANCE %, ENV AMOUNT -100..100 %, KEY TRACK % */
 } snd;
 
 /* A band-limited saw (PolyBLEP): the naive ramp, -32768 at p = 0 rising to 32767, with its jump at the wrap smoothed
@@ -79,6 +81,78 @@ static inline int32_t osc(uint32_t p, uint32_t dt, int32_t rr, int32_t w1, int32
     if (!w2)
         return s;
     return (w1 * s - w2 * blsaw(p + pw, dt, rr)) >> 8;
+}
+
+/* ------------------------------------------------------------ the shared filter --- */
+/* A resonant 12 dB/oct low-pass on the summed notes: a zero-delay-feedback state-variable filter (the trapezoidal
+ * integrator form), stable at every cutoff up to 16 kHz and every resonance, where the older Chamberlin form blows up
+ * above ~FS / 6. Its coefficient g = tan(pi fc / FS) comes from this table, one entry per CUTOFF step (fc = 20 Hz x
+ * 800^(i / 127), as data.c K_CUT shows it), interpolated between steps for the envelope and key tracking; there is
+ * no libm on the target. (python3: math.tan(math.pi * 20 * 800 ** (i / 127) / 44100), i = 0..127.) */
+static const float FILT_G[128] = {
+    0.00142476f, 0.00150176f, 0.001582922f, 0.001668471f, 0.001758643f, 0.001853688f,
+    0.00195387f, 0.002059466f, 0.00217077f, 0.002288089f, 0.002411748f, 0.00254209f,
+    0.002679477f, 0.002824289f, 0.002976927f, 0.003137815f, 0.003307398f, 0.003486147f,
+    0.003674555f, 0.003873147f, 0.004082472f, 0.00430311f, 0.004535673f, 0.004780805f,
+    0.005039186f, 0.005311532f, 0.005598597f, 0.005901178f, 0.006220112f, 0.006556285f,
+    0.006910627f, 0.007284122f, 0.007677805f, 0.008092766f, 0.008530157f, 0.00899119f,
+    0.009477143f, 0.009989364f, 0.01052927f, 0.01109837f, 0.01169823f, 0.01233052f,
+    0.01299699f, 0.01369949f, 0.01443997f, 0.01522049f, 0.01604322f, 0.01691043f,
+    0.01782453f, 0.01878807f, 0.01980372f, 0.02087431f, 0.02200281f, 0.02319236f,
+    0.02444626f, 0.02576802f, 0.02716131f, 0.02863001f, 0.03017822f, 0.03181027f,
+    0.03353069f, 0.03534432f, 0.03725621f, 0.03927172f, 0.0413965f, 0.04363653f,
+    0.04599808f, 0.04848782f, 0.05111277f, 0.05388035f, 0.05679838f, 0.05987517f,
+    0.06311947f, 0.06654053f, 0.07014817f, 0.07395275f, 0.07796526f, 0.08219733f,
+    0.08666128f, 0.09137021f, 0.09633799f, 0.1015794f, 0.10711f, 0.1129465f,
+    0.1191068f, 0.1256096f, 0.1324752f, 0.1397252f, 0.1473827f, 0.1554724f,
+    0.1640209f, 0.1730567f, 0.1826107f, 0.1927161f, 0.2034089f, 0.2147282f,
+    0.2267166f, 0.2394203f, 0.2528903f, 0.2671824f, 0.282358f, 0.2984854f,
+    0.3156403f, 0.3339073f, 0.3533811f, 0.3741689f, 0.3963919f, 0.4201883f,
+    0.4457168f, 0.4731606f, 0.5027326f, 0.5346823f, 0.5693042f, 0.6069493f,
+    0.6480393f, 0.6930867f, 0.7427205f, 0.797723f, 0.8590801f, 0.9280531f,
+    1.006284f, 1.095953f, 1.200017f, 1.322601f, 1.469632f, 1.649952f,
+    1.877377f, 2.174768f,
+};
+#define CUT_PER_SEMI 1.0975f     /* CUTOFF steps per semitone: 127 steps over log2(800) = 9.64 octaves */
+
+static struct {
+    float ic1, ic2;              /* the filter's two integrator states */
+    uint32_t top;                /* the highest note sounding (key tracking), kept through the release */
+    volatile int32_t idx_pub;    /* ISR -> main loop, tests: the cutoff index this block, Q8 (0 .. 127 x 256) */
+} flt;
+
+/* one block through the filter, in place, on the FPU (FM1_FPU: the target's float unit; a plain float elsewhere).
+ * The cutoff index: CUTOFF + ENV AMOUNT x the envelope (+-100 % is +-127 steps, the whole range) + KEY TRACK x the
+ * highest note's distance from C4 (100 %: the cutoff follows the keys); the coefficients once per block. */
+static FM1_FPU __attribute__((noinline)) void filt_block(int32_t *mix, uint32_t n, int32_t env)
+{
+    float idx = (float)snd.f_cut + (float)snd.f_env * 1.27f * ((float)env * (1.0f / ENV_ONE)) +
+                (float)snd.f_kt * 0.01f * CUT_PER_SEMI * (float)((int32_t)flt.top - 60);
+    float g, k, a1, a2, a3, ic1 = flt.ic1, ic2 = flt.ic2, fr;
+    int32_t i;
+    uint32_t j;
+    idx = idx < 0.0f ? 0.0f : idx > 127.0f ? 127.0f : idx;
+    i = (int32_t)idx;
+    fr = idx - (float)i;
+    g = i < 127 ? FILT_G[i] + (FILT_G[i + 1] - FILT_G[i]) * fr : FILT_G[127];
+    k = 2.0f - 1.96f * 0.01f * (float)snd.f_res;          /* damping: 2 (none) .. 0.04 (Q 25, near ringing) */
+    a1 = 1.0f / (1.0f + g * (g + k));
+    a2 = g * a1;
+    a3 = g * a2;
+    flt.idx_pub = (int32_t)(idx * 256.0f);
+    for (j = 0; j < n; j++) {
+        float v3 = (float)mix[j] - ic2, v1 = a1 * ic1 + a2 * v3, v2 = ic2 + a2 * ic1 + a3 * v3;
+        ic1 = 2.0f * v1 - ic1;
+        ic2 = 2.0f * v2 - ic2;
+        mix[j] = (int32_t)v2;
+    }
+    /* a tail far below one LSB goes to 0 (no denormals, exact silence); anything not finite starts over */
+    if (!(ic1 > -1e9f && ic1 < 1e9f) || !(ic2 > -1e9f && ic2 < 1e9f))
+        ic1 = ic2 = 0.0f;
+    if (ic1 > -1e-6f && ic1 < 1e-6f && ic2 > -1e-6f && ic2 < 1e-6f)
+        ic1 = ic2 = 0.0f;
+    flt.ic1 = ic1;
+    flt.ic2 = ic2;
 }
 
 enum { ENV_IDLE, ENV_ATK, ENV_DEC, ENV_REL };
@@ -220,6 +294,7 @@ static void app_audio(int32_t *out, uint32_t n)
         vox.env = 0;
         vox.stage = ENV_IDLE;
         memset(vox.gate, 0, sizeof vox.gate);
+        flt.ic1 = flt.ic2 = 0.0f;
     }
 
     /* what is down now: the keys at the octave shift, MIDI; then HOLD and the pedal keep what was down */
@@ -332,6 +407,13 @@ static void app_audio(int32_t *out, uint32_t n)
         vox.phase[i] += snd.inc[i] * n;
     vox.sounding_pub = rendered;
 
+    for (w = 4u; w-- > 0u;)                      /* key tracking follows the highest note held (kept in the release) */
+        if (target[w]) {
+            flt.top = (w << 5) + 31u - (uint32_t)__builtin_clz(target[w]);
+            break;
+        }
+    filt_block(vox.mix, n, e1);
+
     for (i = 0; i < n; i++) {
         int32_t x = vox.mix[i], ax;
         x = x > 65535 ? 65535 : x < -65535 ? -65535 : x;
@@ -400,6 +482,10 @@ static void snd_update(void)
     snd.rel_coef = snd.rel_coef > 32767 ? 32767 : snd.rel_coef < 1 ? 1 : snd.rel_coef;
     snd.sus = (ENV_ONE >> 2) * cur.p[P_SUS] / 25;   /* exact at 25, 50, 100 %; 2^22 x 100 fits 31 bits */
     snd.gain = set.g[G_VOL] * master_q8 / 100;
+    snd.f_cut = cur.p[P_CUT];
+    snd.f_res = cur.p[P_RES];
+    snd.f_env = cur.p[P_FENV];
+    snd.f_kt = cur.p[P_KTRK];
     snd.legato = set.g[G_TRIG] ? 1u : 0u;
     snd.midi_ch = (uint32_t)set.g[G_MIDICH];
     snd.key_base = (uint32_t)((int32_t)NOTE_KEY0 + 12 * set.oct);

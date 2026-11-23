@@ -445,6 +445,10 @@ static void voice(int r16, int r8, int r4, int atk, int rel)
     cur.p[P_SUS] = 100;
     cur.p[P_REL] = (int8_t)rel;
     cur.p[P_SHAPE] = 0;
+    cur.p[P_CUT] = 127;                                 /* the filter open, flat */
+    cur.p[P_RES] = 0;
+    cur.p[P_FENV] = 0;
+    cur.p[P_KTRK] = 0;
     set.g[G_TRIG] = 0;
     snd_update();
 }
@@ -684,6 +688,86 @@ static void sound(void)
         fm1_in.notes = 0;
         cur.p[P_SHAPE] = 0;
         snd_update();
+        silence();
+    }
+
+    /* the shared filter: a 12 dB/oct low-pass, resonance, the envelope's sweep, key tracking, stable at the extremes */
+    {
+        const double f0 = 65.41;                                    /* C2, 8': harmonics every 65.4 Hz */
+        double h2o, h32o, h64o, h2, h32, h64, h15o, h15r;
+        silence();
+        voice(0, 100, 0, 0, 0);
+        host_midi(0x90, 36, 100);
+        host_render(buf, ONE_S);
+        h2o = tone_db(buf + 2u * 8192u, 32768, 2 * f0);
+        h15o = tone_db(buf + 2u * 8192u, 32768, 15 * f0);
+        h32o = tone_db(buf + 2u * 8192u, 32768, 32 * f0);
+        h64o = tone_db(buf + 2u * 8192u, 32768, 64 * f0);
+        cur.p[P_CUT] = 74;                                          /* ~990 Hz */
+        snd_update();
+        host_render(buf, ONE_S);
+        h2 = tone_db(buf + 2u * 8192u, 32768, 2 * f0);
+        h32 = tone_db(buf + 2u * 8192u, 32768, 32 * f0);
+        h64 = tone_db(buf + 2u * 8192u, 32768, 64 * f0);
+        printf("  (CUTOFF 990 Hz on C2: 131 Hz %+.1f dB, 2.1 kHz %+.1f dB, 4.2 kHz %+.1f dB)\n", h2 - h2o, h32 - h32o, h64 - h64o);
+        check("filter: below the cutoff untouched (131 Hz within 1.5 dB)", fabs(h2 - h2o) < 1.5);
+        check("filter: an octave above the cutoff down > 8 dB", h32 - h32o < -8.0);
+        check("filter: two octaves above down > 20 dB (12 dB/oct)", h64 - h64o < -20.0);
+        cur.p[P_RES] = 90;
+        snd_update();
+        host_render(buf, ONE_S);
+        h15r = tone_db(buf + 2u * 8192u, 32768, 15 * f0);
+        cur.p[P_RES] = 0;
+        snd_update();
+        host_render(buf, ONE_S);
+        printf("  (RESONANCE 90 %%: the harmonic at the cutoff %+.1f dB over RESONANCE 0)\n", h15r - tone_db(buf + 2u * 8192u, 32768, 15 * f0));
+        check("filter: RESONANCE 90 % lifts the cutoff's harmonic > 10 dB", h15r - tone_db(buf + 2u * 8192u, 32768, 15 * f0) > 10.0);
+        (void)h15o;
+        host_midi(0x80, 36, 0);
+        silence();
+
+        voice(0, 100, 0, 80, 0);                                    /* attack ~300 ms, ENV AMOUNT +100 % */
+        cur.p[P_CUT] = 30;
+        cur.p[P_FENV] = 100;
+        snd_update();
+        fm1_in.notes = 1u;
+        host_render(buf, 64);
+        check("ENV AMOUNT +100 %: the sweep starts at CUTOFF", abs(flt.idx_pub - 30 * 256) < 3 * 256);
+        host_render(buf, ONE_S);
+        check("ENV AMOUNT +100 %: at full level the cutoff is all the way up", flt.idx_pub == 127 * 256);
+        cur.p[P_CUT] = 127;
+        cur.p[P_FENV] = -100;
+        snd_update();
+        host_render(buf, 64);
+        check("ENV AMOUNT -100 %: the envelope closes it", flt.idx_pub == 0);
+        silence();
+
+        voice(0, 100, 0, 0, 0);                                     /* KEY TRACK 100 %: a semitone, 1.1 steps */
+        cur.p[P_CUT] = 60;
+        cur.p[P_KTRK] = 100;
+        snd_update();
+        host_midi(0x90, 60, 100);
+        host_render(buf, 256);
+        check("KEY TRACK 100 %: C4 keeps CUTOFF", abs(flt.idx_pub - 60 * 256) < 64);
+        host_midi(0x90, 84, 100);                                   /* C6 joins: the highest note leads */
+        host_render(buf, 256);
+        printf("  (KEY TRACK: C6 opens it %.2f steps)\n", flt.idx_pub / 256.0 - 60);
+        check("KEY TRACK 100 %: C6 two octaves up (+26.3 steps)", fabs(flt.idx_pub / 256.0 - 60 - 26.34) < 0.3);
+        host_midi(0xB0, 123, 0);
+        silence();
+
+        voice(100, 100, 100, 0, 30);                                /* the extremes: every key, RESONANCE 100 % */
+        cur.p[P_RES] = 100;
+        snd_update();
+        fm1_in.notes = (1u << 27) - 1u;
+        host_render(buf, ONE_S);
+        check("RESONANCE 100 %, all keys: bounded, no blow-up", peak(buf, ONE_S) <= 32767 && peak(buf, ONE_S) > 1000 &&
+                                                                 flt.ic1 == flt.ic1);
+        fm1_in.notes = 0;
+        host_render(buf, ONE_S);
+        check("RESONANCE 100 %: the release ends in exact silence, the filter at rest",
+              peak(buf + 2u * (ONE_S - 1024u), 1024) == 0 && flt.ic1 == 0.0f && flt.ic2 == 0.0f);
+        voice(0, 100, 0, 0, 0);
         silence();
     }
 

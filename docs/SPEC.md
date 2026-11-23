@@ -84,6 +84,9 @@ the panel of a 1970s string machine. Every screen is drawn lazily (a signature p
   does the shaping.
 - **Shared filter:** one resonant low-pass (state-variable, 12 dB/oct) on the summed notes: cutoff 20 Hz..16 kHz,
   resonance 0..100 %, envelope amount −100..+100 %, key tracking 0..100 % (from the highest sounding note).
+  Zero-delay-feedback (trapezoidal) form, in float on the FPU, coefficients once per 32-sample block. ENV AMOUNT
+  ±100 % moves the cutoff across its whole range at full envelope; KEY TRACK 100 % follows the keys (1.1 cutoff
+  steps a semitone, from C4). RESONANCE 100 % rings but stays bounded (damping down to 0.04, Q 25).
 - **Shared envelope:** ADSR, attack 1 ms..5 s (linear), decay 5 ms..5 s, sustain 0..100 %, release 5 ms..10 s
   (decay and release exponential: the time shown is where the sound is ~52 dB down, it ends in exact silence at ~1.4x); drives the
   amplitude and (by the amount) the filter. Trigger mode RETRIG restarts the attack on every new key (from the
@@ -167,7 +170,10 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
 2. **Divide-down bank (done, on the unit):** PolyBLEP saws, the SHAPE morph, load shedding with held notes first
    and releasing notes dropped first, CPU % on HOME. Measured on the FM-1: all 27 keys × 3 registers never above
    20 % CPU; MAX_SOUNDING raised from 32 to 48.
-3. **Shared filter and envelope:** the state-variable filter, ADSR with RETRIG / LEGATO, key tracking, the limiter.
+3. **Shared filter and envelope (done):** the filter (a zero-delay-feedback state-variable low-pass on the FPU),
+   ADSR with RETRIG / LEGATO, key tracking, the soft knee and ceiling. Measured: CUTOFF 990 Hz leaves 131 Hz within
+   0.2 dB and takes 2.1 kHz down 15 dB, 4.2 kHz 26 dB; RESONANCE 90 % lifts the cutoff's harmonic 18.6 dB. In the
+   emulator the filter costs about as much as 7..8 note-registers; on the unit, to be read on HOME.
 4. **LFO and MIDI in completed:** vibrato, PWM, delay; pitch bend, mod wheel, sustain, the CC map.
 5. **Ensemble:** the three-phase chorus and its types on ALGORITHM.
 6. **Flanger and delay:** both effects, the pool budget checked.
