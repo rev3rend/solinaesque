@@ -92,8 +92,11 @@ the panel of a 1970s string machine. Every screen is drawn lazily (a signature p
   amplitude and (by the amount) the filter. Trigger mode RETRIG restarts the attack on every new key (from the
   current level, no jump); LEGATO triggers on the first key only. Releases when no key, hold or sustain pedal keeps
   a note.
-- **LFO:** triangle, 0.05..20 Hz; vibrato 0..±50 cents; PWM 0..100 %; delay 0..5 s fade-in from the trigger. The mod
-  wheel adds vibrato.
+- **LFO:** one triangle for all notes (as the old machines: the dividers stay locked), 0.05..20 Hz, once per block;
+  VIBRATO 0..±50 cents, the mod wheel adds up to ±50 more; PWM 0..100 % sweeps the pulse width ±40 % (kept within
+  5..95 %; heard when SHAPE is past SAW); DELAY 0..5 s fades the LFO in after an attack from rest (not on a legato
+  or retriggered note while others sound). Pitch modulation is applied to the 12 pitch-class steps per block (a
+  cents table, 32-bit), and the BLEP width follows.
 - **Effects, in order:** ensemble (multi-tap modulated short delay modelling the three-phase BBD chorus; type on
   ALGORITHM, depth and rate on FX 1) → flanger (short delay with feedback, amount and rate) → stereo delay (time
   10 ms..1 s, or tempo divisions when the arp is synced; feedback 0..95 %; mix 0..100 %; tone: a low-pass in the
@@ -136,9 +139,19 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
 ## MIDI
 
 - **In (USB and TRS):** note on / off on the chosen channel (1..16 or OMNI); sustain pedal (CC64) holds notes; mod
-  wheel (CC1) adds vibrato; pitch bend ±2 semitones (all oscillators); CCs for the main parameters (registers,
-  cutoff, resonance, envelope, ensemble, delay; a fixed map listed in the docs); MIDI clock, start, stop, continue
-  for the arp. TRS MIDI IN is on by default (can be turned off).
+  wheel (CC1) adds vibrato; pitch bend ±2 semitones (all oscillators); CC121 resets bend, mod wheel and pedal; the CC
+  map below; MIDI clock, start, stop, continue for the arp (milestone 8). TRS MIDI IN is on by default.
+- **CC map** (0..127 across each parameter's range, on the chosen channel; the screen follows):
+
+  | CC | Parameter | CC | Parameter | CC | Parameter | CC | Parameter |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | 12 | 16' | 74 | CUTOFF | 73 | ATTACK | 76 | LFO RATE |
+  | 13 | 8' | 71 | RESONANCE | 75 | DECAY | 77 | VIBRATO |
+  | 14 | 4' | 20 | ENV AMOUNT | 70 | SUSTAIN | 78 | PWM |
+  | 15 | SHAPE | 21 | KEY TRACK | 72 | RELEASE | 93 | ENS DEPTH |
+
+  (CC1 mod wheel, CC64 sustain, CC120 / 123 all off, CC121 reset are handled in the audio ISR; a mapped CC is handed
+  to the main loop, which owns the parameters.)
 - **Out (USB):** the keys and the arpeggiator's notes as note on / off on the chosen channel; no clock out in v1.
 - All notes off on MIDI CC123 and when the channel changes.
 
@@ -150,7 +163,6 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
   REC + a black key) to be decided once it plays.
 - Whether the brass/organ "second section" of an ARP Omni style instrument is wanted later.
 - The factory sounds' exact values (tuned by ear in the emulator).
-- The CC map's numbers.
 - Naming user presets (v1 keeps the name of the sound that was saved: a name editor on the keys?).
 - The MASTER pot's real range on the unit (the app reads 0..1023 as silent..full).
 
@@ -174,7 +186,9 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
    ADSR with RETRIG / LEGATO, key tracking, the soft knee and ceiling. Measured: CUTOFF 990 Hz leaves 131 Hz within
    0.2 dB and takes 2.1 kHz down 15 dB, 4.2 kHz 26 dB; RESONANCE 90 % lifts the cutoff's harmonic 18.6 dB. In the
    emulator the filter costs about as much as 7..8 note-registers; on the unit, to be read on HOME.
-4. **LFO and MIDI in completed:** vibrato, PWM, delay; pitch bend, mod wheel, sustain, the CC map.
+4. **LFO and MIDI in (done):** vibrato, PWM, the LFO's fade-in, pitch bend, mod wheel, CC121, the CC map. Measured:
+   VIBRATO 100 % swings −50..+49 cents (the audio's periods vary 1.057×, ±50 cents is 1.0595), PWM 100 % sweeps
+   the width 10..90 %, a full bend lands within 0.1 Hz of ±2 semitones.
 5. **Ensemble (done):** three taps of one short line, each swept by a slow sine (ENS RATE) plus a fast one at 10×,
    120° apart, taps 1 / 3 left / right and tap 2 in both; types I (slow, subtle), II (slow + fast), III (deep),
    FLANGE (the flanger alone); ENS DEPTH scales the sweep (60 %: the type's own; 0 %: still taps, L = R). Equal-power

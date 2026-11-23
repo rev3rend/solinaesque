@@ -508,9 +508,29 @@ static void ui_init(void)
     ui.drawn_page = 0xFF;
 }
 
+/* the CC map: what the ISR received (sound.c snd_midi), applied to the sound here, where the parameters live */
+static void cc_take(void)
+{
+    static uint8_t seen[16];
+    uint32_t k, any = 0;
+    for (k = 0; k < 16u; k++) {
+        uint8_t q = vox.cc_seq[k];
+        if (q != seen[k]) {
+            const param_t *p = &SP[CC_PAR[k]];
+            int32_t v = vox.cc_val[k];
+            seen[k] = q;
+            cur.p[CC_PAR[k]] = clamp8(p->lo + (v * (p->hi - p->lo) + 63) / 127, p);
+            any = 1;
+        }
+    }
+    if (any)
+        snd_update();
+}
+
 static void ui_frame(void)
 {
     ui.frames++;
+    cc_take();
     ui_buttons();
     ui_encoders();
     snd_shed();

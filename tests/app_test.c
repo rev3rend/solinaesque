@@ -451,6 +451,22 @@ static double corr_lr(const int32_t *b, uint32_t frames)   /* the correlation of
     return slr / sqrt(sl * sr + 1e-30);
 }
 
+static double period_ratio(const int32_t *b, uint32_t frames)   /* the longest period over the shortest (left) */
+{
+    uint32_t i, last = 0, lo = 0xFFFFFFFFu, hi = 0, n = 0;
+    for (i = 1; i < frames; i++)
+        if (b[2u * (i - 1u)] < 0 && b[2u * i] >= 0) {
+            if (last && n > 2u) {
+                uint32_t p = i - last;
+                lo = p < lo ? p : lo;
+                hi = p > hi ? p : hi;
+            }
+            last = i;
+            n++;
+        }
+    return lo && hi ? (double)hi / lo : 0.0;
+}
+
 static int same_lr(const int32_t *b, uint32_t frames)
 {
     uint32_t i;
@@ -476,6 +492,9 @@ static void voice(int r16, int r8, int r4, int atk, int rel)
     cur.p[P_FENV] = 0;
     cur.p[P_KTRK] = 0;
     cur.p[P_ENS] = 0;                                   /* the effects off: the oscillators alone */
+    cur.p[P_VIB] = 0;                                   /* the LFO quiet */
+    cur.p[P_PWM] = 0;
+    cur.p[P_LDLY] = 0;
     cur.p[P_FLGA] = 0;
     cur.p[P_DMIX] = 0;
     set.g[G_TRIG] = 0;
@@ -925,6 +944,151 @@ static void sound(void)
         host_render(buf, ONE_S);
         check("DLY MIX 0: no echo", peak(buf + 2u * 4096u, ONE_S - 4096u) == 0);
         voice(0, 100, 0, 0, 0);
+        silence();
+    }
+
+    /* the LFO: vibrato (depth in the audio, rate), its fade-in, PWM; MIDI: pitch bend, the mod wheel, resets, the CC map */
+    {
+        int32_t cmin = 0, cmax = 0, last = 0, flips = 0;
+        uint32_t b, k, rate_mhz, pmin = 0xFFFFFFFFu, pmax = 0;
+        double pr;
+        silence();
+        voice(0, 100, 0, 0, 0);
+        cur.p[P_VIB] = 100;
+        cur.p[P_LRATE] = 98;                                        /* ~5 Hz */
+        snd_update();
+        rate_mhz = pv_ms(K_HZ, 98);
+        fm1_in.notes = 1u;                                          /* F3 */
+        host_render(buf, 4096);
+        for (b = 0; b < FS / CTL; b++) {                            /* a second, block by block */
+            host_render(buf + 2u * b * CTL, CTL);
+            cmin = vox.cents_pub < cmin ? vox.cents_pub : cmin;
+            cmax = vox.cents_pub > cmax ? vox.cents_pub : cmax;
+            if (b && (vox.cents_pub >= 0) != (last >= 0))
+                flips++;
+            last = vox.cents_pub;
+        }
+        printf("  (VIBRATO 100 %%: %d .. %+d cents, %d crossings in 1 s at %.2f Hz)\n", cmin, cmax, flips, rate_mhz / 1000.0);
+        check("VIBRATO 100 %: +-50 cents", cmin <= -48 && cmin >= -50 && cmax >= 48 && cmax <= 50);
+        check("LFO RATE: the vibrato's rate (+-10 %)", fabs(flips / 2.0 - rate_mhz / 1000.0) < rate_mhz / 10000.0 + 0.5);
+        pr = period_ratio(buf, FS / CTL * CTL);
+        printf("  (the longest period over the shortest: %.4f, +-50 cents is 1.0595)\n", pr);
+        check("VIBRATO 100 %: heard (period ratio 1.04 .. 1.08)", pr > 1.04 && pr < 1.08);
+        check("VIBRATO: centred (F3 on average within 0.5 Hz)", fabs(pitch(buf, FS / CTL * CTL) - 174.61) < 0.5);
+        fm1_in.notes = 0;
+        silence();
+        host_render(buf, ONE_S);                                    /* (the envelope at rest: a fresh attack) */
+
+        cur.p[P_LDLY] = 25;                                         /* DELAY 1 s */
+        snd_update();
+        fm1_in.notes = 1u;
+        cmax = 0;
+        for (b = 0; b < (FS / 5u) / CTL; b++) {                     /* the first 200 ms */
+            host_render(buf, CTL);
+            cmax = abs(vox.cents_pub) > cmax ? abs(vox.cents_pub) : cmax;
+        }
+        check("DELAY 1 s: little vibrato in the first 200 ms (<= 25 %)", cmax <= 13);
+        host_render(buf, ONE_S);
+        cmax = 0;
+        for (b = 0; b < (FS / 4u) / CTL; b++) {
+            host_render(buf, CTL);
+            cmax = abs(vox.cents_pub) > cmax ? abs(vox.cents_pub) : cmax;
+        }
+        check("DELAY 1 s: full vibrato after it", cmax >= 48);
+        fm1_in.notes = 0;
+        cur.p[P_LDLY] = 0;
+        cur.p[P_VIB] = 0;
+        snd_update();
+        silence();
+
+        cur.p[P_SHAPE] = 66;                                        /* PWM on a square: the width swept */
+        cur.p[P_PWM] = 100;
+        cur.p[P_LRATE] = 60;
+        snd_update();
+        fm1_in.notes = 1u << 7;
+        for (b = 0; b < (2u * FS) / CTL; b++) {
+            host_render(buf, CTL);
+            pmin = vox.pw_pub < pmin ? vox.pw_pub : pmin;
+            pmax = vox.pw_pub > pmax ? vox.pw_pub : pmax;
+        }
+        printf("  (PWM 100 %%: the width %.1f .. %.1f %%)\n", pmin / 42949672.96, pmax / 42949672.96);
+        check("PWM 100 %: the width swept from ~10 % to ~90 %", pmin < 0.15 * 4294967296.0 && pmax > 0.85 * 4294967296.0);
+        fm1_in.notes = 0;
+        silence();
+        {   /* PWM on a saw does nothing (a saw has no width) */
+            static int32_t a[2u * 8192u];
+            cur.p[P_SHAPE] = 0;
+            cur.p[P_PWM] = 0;
+            snd_update();
+            fm1_in.notes = 1u << 7;
+            host_render(a, 8192);
+            silence();
+            cur.p[P_PWM] = 100;
+            snd_update();
+            fm1_in.notes = 1u << 7;
+            host_render(buf, 8192);
+            check("PWM on a saw: no change", !memcmp(a, buf, sizeof a));
+            fm1_in.notes = 0;
+            cur.p[P_PWM] = 0;
+            snd_update();
+            silence();
+        }
+
+        host_midi(0xE0, 127, 127);                                  /* bend all the way up: +2 semitones */
+        fm1_in.notes = 1u;                                          /* F3 -> G3 */
+        host_render(buf, ONE_S);
+        check("pitch bend up: +2 semitones (F3 -> G3 196.0 Hz)", fabs(pitch(buf, ONE_S) - 196.0) < 0.5);
+        host_midi(0xE0, 0, 0);
+        host_render(buf, ONE_S);
+        check("pitch bend down: -2 semitones (F3 -> D#3 155.6 Hz)", fabs(pitch(buf, ONE_S) - 155.56) < 0.5);
+        host_midi(0xE0, 0, 64);
+        host_render(buf, ONE_S);
+        check("pitch bend centred: F3 again", fabs(pitch(buf, ONE_S) - 174.61) < 0.5);
+        host_midi(0xB0, 1, 127);                                    /* the mod wheel, VIBRATO 0 */
+        cmax = 0;
+        for (b = 0; b < FS / CTL; b++) {
+            host_render(buf, CTL);
+            cmax = abs(vox.cents_pub) > cmax ? abs(vox.cents_pub) : cmax;
+        }
+        check("the mod wheel up: vibrato (+-49 cents) with VIBRATO at 0", cmax >= 47 && cmax <= 50);
+        host_midi(0xE0, 127, 127);
+        host_midi(0xB0, 121, 0);                                    /* reset all controllers */
+        host_render(buf, 1024);
+        check("CC121: bend and mod wheel back at rest", vox.bend == 0 && vox.modw == 0 && vox.cents_pub == 0);
+        host_midi(0xE0, 127, 127);
+        host_render(buf, 64);
+        app_audio_stop();
+        host_render(buf, 64);
+        check("app_audio_stop: the bend forgotten", vox.bend == 0);
+        fm1_in.notes = 0;
+        silence();
+
+        host_midi(0xB0, 74, 0);                                     /* the CC map, applied by the main loop */
+        host_midi(0xB0, 71, 64);
+        host_midi(0xB0, 20, 0);
+        host_midi(0xB0, 13, 127);
+        host_render(buf, CTL);
+        host_frame();
+        check("CC74 0 / CC71 64 / CC20 0 / CC13 127: CUTOFF 0, RESONANCE 50 %, ENV AMOUNT -100 %, 8' 100 %",
+              cur.p[P_CUT] == 0 && cur.p[P_RES] == 50 && cur.p[P_FENV] == -100 && cur.p[P_R8] == 100 && snd.f_cut == 0);
+        host_midi(0xB0, 74, 127);
+        host_render(buf, CTL);
+        host_frame();
+        check("CC74 127: CUTOFF all the way up", cur.p[P_CUT] == 127);
+        set.g[G_MIDICH] = 2;
+        snd_update();
+        host_midi(0xB0, 74, 10);                                    /* channel 1: not ours */
+        host_render(buf, CTL);
+        host_frame();
+        check("a CC on another channel: ignored", cur.p[P_CUT] == 127);
+        host_midi(0xB1, 74, 10);
+        host_render(buf, CTL);
+        host_frame();
+        check("a CC on ours: applied", cur.p[P_CUT] == 10);
+        set.g[G_MIDICH] = 0;
+        voice(0, 100, 0, 0, 0);
+        for (k = 0; k < 4u; k++)
+            host_frame();
         silence();
     }
 

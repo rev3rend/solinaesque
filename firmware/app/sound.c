@@ -45,6 +45,9 @@ static struct {
     int32_t w1, w2;              /* SHAPE: osc = (w1 x saw(p) - w2 x saw(p + pw)) / 256 (w2 0: a plain saw) */
     uint32_t pw;                 /* SHAPE: the second saw's offset, the pulse width (2^31: a square) */
     int32_t f_cut, f_res, f_env, f_kt;   /* the filter: CUTOFF 0..127, RESONANCE %, ENV AMOUNT -100..100 %, KEY TRACK % */
+    uint32_t lfo_inc;            /* the LFO's phase step per block */
+    int32_t vib_c, pwm;          /* VIBRATO as cents (0..50: 100 % is +-50), PWM % (100 %: the width +-40 %) */
+    int32_t lfo_fade;            /* the LFO's fade-in per block after an attack, Q16 (65536: at once) */
 } snd;
 
 /* A band-limited saw (PolyBLEP): the naive ramp, -32768 at p = 0 rising to 32767, with its jump at the wrap smoothed
@@ -179,7 +182,71 @@ static struct {
     volatile uint32_t sounding_pub;  /* ISR -> main loop: notes rendered last block */
     volatile uint32_t cap;           /* main loop -> ISR: notes rendered at most (CAP_MIN .. MAX_SOUNDING; snd_shed) */
     uint32_t cap_ms;                 /* (main loop: when the cap last rose) */
+    /* the LFO and the performance controls (ISR state) */
+    uint32_t lfo_ph;
+    int32_t lfo_amt;                 /* the fade-in after an attack, Q16 (0 .. 65536) */
+    int32_t bend;                    /* pitch bend in cents, -200 .. +200 */
+    int32_t modw;                    /* the mod wheel (CC1), 0..127: more vibrato */
+    volatile int32_t cents_pub;      /* ISR -> tests: the pitch offset this block, cents */
+    volatile uint32_t pw_pub;        /* ISR -> tests: the pulse width this block */
+    /* the CC map: the ISR writes a value, then bumps its counter; the main loop applies what changed (cc_take) */
+    volatile uint8_t cc_val[16];
+    volatile uint8_t cc_seq[16];
 } vox;
+
+/* the pitch modulation: 65536 x (2^(c / 1200) - 1) for c = -300 .. +300 cents (vibrato + mod wheel + bend), so a
+ * step is inc + (inc >> 4) x CENT_DQ >> 12, all in 32 bits (|CENT_DQ| <= 12 400, inc >> 4 <= 94 000) */
+static const int16_t CENT_DQ[601] = {
+    -10427, -10395, -10363, -10331, -10300, -10268, -10236, -10204, -10172, -10140, -10108, -10076, -10044, -10012, -9980,
+    -9947, -9915, -9883, -9851, -9819, -9787, -9754, -9722, -9690, -9658, -9625, -9593, -9561, -9528, -9496,
+    -9464, -9431, -9399, -9366, -9334, -9302, -9269, -9237, -9204, -9171, -9139, -9106, -9074, -9041, -9008,
+    -8976, -8943, -8910, -8878, -8845, -8812, -8779, -8747, -8714, -8681, -8648, -8615, -8582, -8549, -8517,
+    -8484, -8451, -8418, -8385, -8352, -8319, -8286, -8252, -8219, -8186, -8153, -8120, -8087, -8054, -8020,
+    -7987, -7954, -7921, -7887, -7854, -7821, -7787, -7754, -7721, -7687, -7654, -7620, -7587, -7553, -7520,
+    -7486, -7453, -7419, -7386, -7352, -7318, -7285, -7251, -7217, -7184, -7150, -7116, -7083, -7049, -7015,
+    -6981, -6947, -6914, -6880, -6846, -6812, -6778, -6744, -6710, -6676, -6642, -6608, -6574, -6540, -6506,
+    -6472, -6438, -6403, -6369, -6335, -6301, -6267, -6232, -6198, -6164, -6129, -6095, -6061, -6026, -5992,
+    -5958, -5923, -5889, -5854, -5820, -5785, -5751, -5716, -5682, -5647, -5613, -5578, -5543, -5509, -5474,
+    -5439, -5404, -5370, -5335, -5300, -5265, -5231, -5196, -5161, -5126, -5091, -5056, -5021, -4986, -4951,
+    -4916, -4881, -4846, -4811, -4776, -4741, -4706, -4671, -4635, -4600, -4565, -4530, -4495, -4459, -4424,
+    -4389, -4353, -4318, -4283, -4247, -4212, -4176, -4141, -4106, -4070, -4035, -3999, -3963, -3928, -3892,
+    -3857, -3821, -3785, -3750, -3714, -3678, -3643, -3607, -3571, -3535, -3499, -3463, -3428, -3392, -3356,
+    -3320, -3284, -3248, -3212, -3176, -3140, -3104, -3068, -3032, -2996, -2960, -2923, -2887, -2851, -2815,
+    -2779, -2742, -2706, -2670, -2633, -2597, -2561, -2524, -2488, -2451, -2415, -2378, -2342, -2305, -2269,
+    -2232, -2196, -2159, -2123, -2086, -2049, -2013, -1976, -1939, -1902, -1866, -1829, -1792, -1755, -1718,
+    -1682, -1645, -1608, -1571, -1534, -1497, -1460, -1423, -1386, -1349, -1312, -1275, -1237, -1200, -1163,
+    -1126, -1089, -1051, -1014, -977, -940, -902, -865, -828, -790, -753, -715, -678, -640, -603,
+    -565, -528, -490, -453, -415, -377, -340, -302, -264, -227, -189, -151, -113, -76, -38,
+    0, 38, 76, 114, 152, 190, 228, 266, 304, 342, 380, 418, 456, 494, 532,
+    570, 608, 647, 685, 723, 761, 800, 838, 876, 915, 953, 992, 1030, 1069, 1107,
+    1146, 1184, 1223, 1261, 1300, 1338, 1377, 1416, 1454, 1493, 1532, 1571, 1609, 1648, 1687,
+    1726, 1765, 1804, 1842, 1881, 1920, 1959, 1998, 2037, 2076, 2115, 2155, 2194, 2233, 2272,
+    2311, 2350, 2390, 2429, 2468, 2507, 2547, 2586, 2625, 2665, 2704, 2744, 2783, 2823, 2862,
+    2902, 2941, 2981, 3020, 3060, 3099, 3139, 3179, 3219, 3258, 3298, 3338, 3378, 3417, 3457,
+    3497, 3537, 3577, 3617, 3657, 3697, 3737, 3777, 3817, 3857, 3897, 3937, 3977, 4017, 4058,
+    4098, 4138, 4178, 4219, 4259, 4299, 4340, 4380, 4420, 4461, 4501, 4542, 4582, 4623, 4663,
+    4704, 4744, 4785, 4826, 4866, 4907, 4948, 4988, 5029, 5070, 5111, 5151, 5192, 5233, 5274,
+    5315, 5356, 5397, 5438, 5479, 5520, 5561, 5602, 5643, 5684, 5725, 5767, 5808, 5849, 5890,
+    5932, 5973, 6014, 6055, 6097, 6138, 6180, 6221, 6263, 6304, 6346, 6387, 6429, 6470, 6512,
+    6553, 6595, 6637, 6678, 6720, 6762, 6804, 6845, 6887, 6929, 6971, 7013, 7055, 7097, 7139,
+    7181, 7223, 7265, 7307, 7349, 7391, 7433, 7475, 7518, 7560, 7602, 7644, 7687, 7729, 7771,
+    7814, 7856, 7898, 7941, 7983, 8026, 8068, 8111, 8153, 8196, 8238, 8281, 8324, 8366, 8409,
+    8452, 8495, 8537, 8580, 8623, 8666, 8709, 8752, 8794, 8837, 8880, 8923, 8966, 9009, 9053,
+    9096, 9139, 9182, 9225, 9268, 9312, 9355, 9398, 9441, 9485, 9528, 9571, 9615, 9658, 9702,
+    9745, 9789, 9832, 9876, 9919, 9963, 10006, 10050, 10094, 10137, 10181, 10225, 10269, 10313, 10356,
+    10400, 10444, 10488, 10532, 10576, 10620, 10664, 10708, 10752, 10796, 10840, 10884, 10928, 10973, 11017,
+    11061, 11105, 11150, 11194, 11238, 11283, 11327, 11371, 11416, 11460, 11505, 11549, 11594, 11638, 11683,
+    11728, 11772, 11817, 11862, 11906, 11951, 11996, 12041, 12085, 12130, 12175, 12220, 12265, 12310, 12355,
+    12400,
+};
+#define CENTS_MAX 300
+#define PW_MIN 214748365u        /* the pulse width's limits under PWM: 5 % and 95 % of the period */
+#define PW_MAX 4080218931u
+
+/* the CC map (docs/SPEC.md "MIDI"): CC number -> the sound parameter it sets (0..127 across its range) */
+static const uint8_t CC_NUM[16] = {12, 13, 14, 15, 74, 71, 20, 21, 73, 75, 70, 72, 76, 77, 78, 93};
+static const uint8_t CC_PAR[16] = {P_R16, P_R8, P_R4, P_SHAPE, P_CUT, P_RES, P_FENV, P_KTRK,
+                                   P_ATK, P_DEC, P_SUS, P_REL, P_LRATE, P_VIB, P_PWM, P_ENSD};
 
 static const uint8_t *note_oct_tbl(void)        /* n / 12 without a divide in the ISR */
 {
@@ -229,6 +296,24 @@ static __attribute__((noinline)) void snd_midi(uint32_t pkt)
         bits_clear(vox.sus);
         bits_clear(vox.latch);
         vox.pedal = 0;
+    } else if (st == 0xE0u)                      /* pitch bend: 14 bits, centre 8192, +-2 semitones */
+        vox.bend = ((int32_t)(d1 | d2 << 7) - 8192) * 200 >> 13;
+    else if (st == 0xB0u && d1 == 1u)            /* the mod wheel: vibrato on top of VIBRATO */
+        vox.modw = (int32_t)d2;
+    else if (st == 0xB0u && d1 == 121u) {        /* reset all controllers */
+        vox.bend = 0;
+        vox.modw = 0;
+        vox.pedal = 0;
+        bits_clear(vox.sus);
+    } else if (st == 0xB0u) {                    /* the CC map: handed to the main loop (cc_take) */
+        uint32_t k;
+        for (k = 0; k < 16u; k++)
+            if (CC_NUM[k] == d1) {
+                vox.cc_val[k] = (uint8_t)d2;
+                RING_PUBLISH();                  /* (the value before the counter) */
+                vox.cc_seq[k]++;
+                break;
+            }
     }
 }
 
@@ -236,8 +321,11 @@ static __attribute__((noinline)) void snd_midi(uint32_t pkt)
 static void env_block(uint32_t any_gated, uint32_t new_note)
 {
     int32_t e = vox.env;
-    if (new_note && (!snd.legato || vox.stage == ENV_IDLE || vox.stage == ENV_REL))
+    if (new_note && (!snd.legato || vox.stage == ENV_IDLE || vox.stage == ENV_REL)) {
+        if (vox.stage == ENV_IDLE || vox.stage == ENV_REL)
+            vox.lfo_amt = 0;                     /* DELAY: the LFO fades in again from a fresh start */
         vox.stage = ENV_ATK;                     /* from the current level: no jump */
+    }
     else if (!any_gated && vox.stage != ENV_IDLE)
         vox.stage = ENV_REL;
     switch (vox.stage) {
@@ -268,6 +356,41 @@ static void env_block(uint32_t any_gated, uint32_t new_note)
     vox.env = e;
 }
 
+/* the LFO, once per block: a triangle (RATE), faded in after an attack (DELAY); vibrato (VIBRATO + the mod wheel)
+ * and pitch bend move all 12 pitch-class steps together (one master pitch, as on the old machines: the dividers
+ * stay locked); PWM sweeps the pulse width (heard when SHAPE is past SAW). Integer, 32-bit. */
+static void lfo_block(uint32_t *incm, int32_t *rrm, uint32_t *pw)
+{
+    int32_t tri, c, dq, k, i;
+    uint32_t ph = vox.lfo_ph;
+    tri = (int32_t)(ph >> 15) - 65536;                       /* -65536 .. 65535 */
+    tri = (tri < 0 ? -tri : tri) - 32768;                    /* the triangle, -32768 .. 32768 */
+    tri = tri > 32767 ? 32767 : tri;
+    vox.lfo_ph = ph + snd.lfo_inc;
+    k = vox.lfo_amt + snd.lfo_fade;
+    vox.lfo_amt = k > 65536 ? 65536 : k;
+    tri = tri * (vox.lfo_amt >> 1) >> 15;                    /* (2^15 x 2^15: 32 bits, no 64-bit helper) */
+    /* cents: VIBRATO 100 % = +-50, the mod wheel adds up to +-50 more, the bend +-200 */
+    c = (tri * (snd.vib_c + (vox.modw * 50 >> 7)) >> 15) + vox.bend;
+    c = c < -CENTS_MAX ? -CENTS_MAX : c > CENTS_MAX ? CENTS_MAX : c;
+    vox.cents_pub = c;
+    dq = CENT_DQ[c + CENTS_MAX];
+    for (i = 0; i < 12; i++) {
+        incm[i] = snd.inc[i] + (uint32_t)((int32_t)(snd.inc[i] >> 4) * dq >> 12);
+        rrm[i] = snd.rr[i] - ((snd.rr[i] >> 8) * dq >> 8);    /* 1 / (1 + d) ~ 1 - d: the BLEP width follows */
+    }
+    if (snd.pwm) {                               /* +-40 % of the period at 100 %, kept inside 5 .. 95 % */
+        int32_t d = tri * snd.pwm * 524;         /* (32768 x 100 x 524 < 2^31) */
+        uint32_t w = *pw;
+        if (d >= 0)
+            w = (uint32_t)d > PW_MAX - w ? PW_MAX : w + (uint32_t)d;
+        else
+            w = (uint32_t)-d > w - PW_MIN ? PW_MIN : w - (uint32_t)-d;
+        *pw = w;
+    }
+    vox.pw_pub = *pw;
+}
+
 static void app_audio(int32_t *out, uint32_t n)
 {
     uint32_t keys = fm1_in.notes, pkt, i, w, any = 0, fresh = 0, input = 0, rendered = 0, cap, pass;
@@ -275,6 +398,8 @@ static void app_audio(int32_t *out, uint32_t n)
     int32_t e0, e1, de, a16 = snd.amp16, a8 = snd.amp8, a4 = snd.amp4, gain = snd.gain;
     int32_t w1 = snd.w1, w2 = snd.w2;
     uint32_t pw = snd.pw;
+    uint32_t incm[12];
+    int32_t rrm[12];
 
     if (vox.midi_off_req) {                      /* before the queue: the old channel's notes go, what came in on the
                                                   * new channel since stays */
@@ -293,6 +418,8 @@ static void app_audio(int32_t *out, uint32_t n)
         bits_clear(vox.open);
         bits_clear(vox.prev_gated);
         vox.pedal = 0;
+        vox.bend = 0;
+        vox.modw = 0;
         vox.env = 0;
         vox.stage = ENV_IDLE;
         memset(vox.gate, 0, sizeof vox.gate);
@@ -330,6 +457,7 @@ static void app_audio(int32_t *out, uint32_t n)
     e0 = vox.env;
     env_block(any, fresh);
     e1 = vox.env;
+    lfo_block(incm, rrm, &pw);
     de = (e1 - e0) >> 5;                         /* / CTL as a shift: a signed "/ 32" compiles to a hardware divide;
                                                   * the floor ends a falling block <= 31 / 2^24 low: inaudible */
     /* while keys are down their gates follow them; when the last goes up, the notes it leaves keep sounding through
@@ -375,8 +503,8 @@ static void app_audio(int32_t *out, uint32_t n)
             k4 = k < 10u ? k + 1u : k;
             pc = note - k * 12u;
             ph = vox.phase[pc];
-            inc = snd.inc[pc];
-            rr = snd.rr[pc];
+            inc = incm[pc];
+            rr = rrm[pc];
             gs = g0 << 5;                        /* Q15, interpolated across the block */
             dg = g1 - g0;
             {   /* each register's step and BLEP reciprocal: octave k is the lowest octave's << k (and rr >> k) */
@@ -407,7 +535,7 @@ static void app_audio(int32_t *out, uint32_t n)
         }
     }
     for (i = 0; i < 12u; i++)
-        vox.phase[i] += snd.inc[i] * n;
+        vox.phase[i] += incm[i] * n;
     vox.sounding_pub = rendered;
 
     for (w = 4u; w-- > 0u;)                      /* key tracking follows the highest note held (kept in the release) */
@@ -498,6 +626,13 @@ static void snd_update(void)
     fxp.dly_fb = cur.p[P_DFB];
     fxp.dly_mix = cur.p[P_DMIX];
     fxp.dly_tone = cur.p[P_DTONE];
+    snd.lfo_inc = pv_ms(K_HZ, cur.p[P_LRATE]) * 3117u;     /* mHz -> a phase step per block (fx.c's rule) */
+    snd.vib_c = (cur.p[P_VIB] * 50 + 50) / 100;   /* (the divide here, not in the ISR) */
+    snd.pwm = cur.p[P_PWM];
+    ms = pv_ms(K_MS, cur.p[P_LDLY]);                      /* DELAY: 0 .. 5 s to full; 32 frames a block */
+    snd.lfo_fade = ms ? (int32_t)(65536u * CTL / (ms * (FS / 1000u))) : 65536;
+    if (snd.lfo_fade < 1)
+        snd.lfo_fade = 1;
     snd.f_cut = cur.p[P_CUT];
     snd.f_res = cur.p[P_RES];
     snd.f_env = cur.p[P_FENV];
