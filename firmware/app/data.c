@@ -174,34 +174,60 @@ typedef struct {
     int8_t p[NSP_STORED];        /* SP order; the tail beyond NSP is 0 */
 } preset_t;
 
-#define NFACT 8
+#define NFACT 16
 #define NUSER 32
-#define NPRESETS (NFACT + NUSER) /* PRESETS browses F1..F8 then U01..U32 */
-/* the factory sounds: 16' 8' 4' shape | cutoff res env ktrk | A D S R | lfo: rate vib pwm delay |
- * ens depth rate, flanger amount rate | delay time fb mix tone | ensemble type (by ear in the emulator later) */
+#define NPRESETS (NFACT + NUSER) /* PRESETS browses F1..F16 then U01..U32 */
+#define PRESET_NEW NPRESETS      /* cur_index of a sound from no preset (INIT): shown as NEW */
+/* the factory sounds, by parameter (data.c SP order):
+ *   16' 8' 4' SHAPE | CUTOFF RES ENV-AMT KEY-TRK | ATTACK DECAY SUSTAIN RELEASE | LFO RATE VIBRATO PWM DELAY |
+ *   ENS-DEPTH ENS-RATE FLANGER FLG-RATE | DLY-TIME FEEDBACK DLY-MIX DLY-TONE | ENSEMBLE (0 off, 1 I, 2 II, 3 III, 4 FL)
+ * Indexes, not units: CUTOFF 80 ~1.4 kHz, 100 ~3.8 kHz, 110 ~6.5 kHz; ATTACK 60 ~60 ms, 80 ~210 ms, 100 ~830 ms;
+ * RELEASE 70 ~330 ms, 85 ~810 ms, 100 ~2 s; LFO RATE 52 ~0.6 Hz, 98 ~5 Hz; DLY TIME 90 ~260 ms, 110 ~540 ms.
+ * Designed from the engine; to be tuned by ear on the unit. */
 static const preset_t FACTORY[NFACT] = {
-    {"CLASSIC", {70, 100, 40, 0, 127, 0, 0, 0, 70, 64, 100, 70, 64, 0, 0, 0, 60, 40, 0, 20, 90, 30, 0, 60, 2}},
-    {"CELLO", {100, 60, 0, 0, 90, 10, 20, 30, 80, 64, 90, 75, 60, 12, 0, 50, 50, 36, 0, 20, 90, 30, 0, 60, 1}},
-    {"VIOLINS", {0, 100, 70, 0, 120, 0, 0, 0, 72, 64, 100, 72, 66, 15, 0, 60, 70, 44, 0, 20, 90, 30, 10, 60, 2}},
-    {"FULL ENS", {90, 100, 80, 10, 127, 0, 0, 0, 74, 64, 100, 80, 64, 0, 0, 0, 80, 40, 0, 20, 100, 35, 15, 55, 3}},
-    {"DARK PAD", {100, 80, 0, 0, 70, 20, 10, 0, 95, 80, 85, 95, 50, 0, 20, 0, 70, 30, 0, 20, 110, 40, 20, 40, 3}},
-    {"BRIGHT", {40, 100, 100, 30, 127, 15, 0, 40, 50, 64, 100, 60, 64, 0, 0, 0, 50, 50, 0, 20, 80, 25, 0, 70, 1}},
-    {"SWELL", {80, 100, 50, 0, 100, 10, 40, 0, 110, 90, 100, 100, 64, 10, 0, 90, 60, 40, 0, 20, 100, 40, 20, 50, 2}},
-    {"SPACE", {60, 100, 60, 75, 110, 10, 0, 0, 88, 64, 100, 110, 40, 0, 40, 0, 80, 30, 30, 10, 120, 70, 45, 45, 4}},
+    /* F1 the string machine: 16' + 8' + some 4', a gentle swell, ensemble II at ~0.6 / 6 Hz */
+    {"CLASSIC", {60, 100, 50, 0, 105, 0, 0, 30, 75, 64, 100, 85, 98, 0, 0, 0, 60, 52, 0, 20, 90, 30, 0, 60, 2}},
+    /* F2 low, darker, a slow bow and late vibrato */
+    {"CELLO", {100, 70, 0, 10, 85, 15, 20, 50, 85, 70, 90, 80, 98, 15, 0, 15, 50, 52, 0, 20, 90, 30, 0, 60, 1}},
+    /* F3 8' + 4', bright, vibrato fading in, a touch of echo */
+    {"VIOLINS", {0, 100, 80, 0, 112, 5, 10, 40, 80, 64, 100, 85, 100, 20, 0, 20, 65, 52, 0, 20, 100, 25, 10, 50, 2}},
+    /* F4 every register, the deep ensemble, a room of echo */
+    {"FULL ENS", {90, 100, 80, 10, 120, 0, 0, 20, 78, 64, 100, 90, 98, 0, 0, 0, 70, 50, 0, 20, 110, 35, 15, 55, 3}},
+    /* F5 saw + square, low cutoff with resonance, slow in and out, dark echoes */
+    {"DARK PAD", {100, 80, 0, 40, 72, 25, 15, 0, 100, 90, 85, 100, 30, 0, 0, 0, 80, 40, 0, 20, 115, 45, 20, 35, 3}},
+    /* F6 8' + 4' wide open, quick, ensemble I */
+    {"BRIGHT", {40, 100, 100, 0, 127, 10, 0, 50, 55, 64, 100, 70, 98, 0, 0, 0, 55, 52, 0, 20, 90, 30, 0, 60, 1}},
+    /* F7 a long attack opening the filter with it, late vibrato */
+    {"SWELL", {80, 100, 50, 0, 50, 30, 70, 20, 112, 100, 100, 100, 96, 12, 0, 50, 60, 52, 0, 20, 105, 40, 20, 50, 2}},
+    /* F8 a pulse with slow PWM through the flanger and long echoes */
+    {"SPACE", {60, 100, 60, 75, 110, 10, 0, 0, 88, 64, 100, 110, 35, 0, 40, 0, 70, 40, 45, 15, 120, 70, 45, 45, 4}},
+    /* F9 a brass section: the filter envelope bites and falls back, a little vibrato */
+    {"BRASS", {0, 100, 40, 0, 60, 20, 55, 40, 60, 85, 70, 70, 98, 8, 0, 12, 40, 52, 0, 20, 90, 30, 0, 60, 1}},
+    /* F10 squares in all registers, instant on and off, a fast ensemble for movement */
+    {"ORGAN", {80, 100, 70, 66, 115, 0, 0, 0, 10, 0, 100, 30, 104, 0, 0, 0, 80, 70, 0, 20, 90, 30, 0, 60, 2}},
+    /* F11 a square with slow PWM: hollow and moving */
+    {"HOLLOW", {50, 100, 0, 66, 95, 15, 0, 20, 90, 64, 100, 95, 45, 0, 70, 0, 50, 45, 0, 20, 100, 30, 15, 40, 1}},
+    /* F12 a narrow pulse, 4' leading, resonance tracking the keys, bright echoes */
+    {"GLASS", {0, 60, 100, 85, 100, 55, 0, 80, 70, 64, 100, 100, 60, 0, 30, 0, 50, 52, 0, 20, 90, 50, 30, 70, 2}},
+    /* F13 16' first, rounded, for the left hand */
+    {"BASSES", {100, 50, 0, 0, 75, 10, 0, 60, 80, 64, 100, 80, 98, 10, 0, 15, 45, 52, 0, 20, 90, 30, 0, 60, 1}},
+    /* F14 no sustain: the filter envelope plucks, the echo carries it */
+    {"PLUCK", {30, 100, 60, 0, 55, 30, 75, 40, 0, 75, 0, 75, 98, 0, 0, 0, 50, 52, 0, 20, 95, 35, 25, 50, 2}},
+    /* F15 resonance at a vowel-like cutoff, the deep ensemble, late vibrato */
+    {"VOX", {40, 100, 30, 25, 88, 35, 0, 30, 92, 64, 100, 95, 100, 10, 0, 25, 75, 48, 0, 20, 115, 35, 15, 40, 3}},
+    /* F16 a plain voice into a dark, long tape echo */
+    {"ECHOES", {0, 100, 40, 0, 100, 0, 0, 30, 60, 80, 60, 85, 98, 0, 0, 0, 40, 52, 0, 20, 108, 65, 55, 30, 1}},
 };
 
+/* INIT (SAVE held; a slot cleared): one 8' saw, the filter open, no LFO, no effects, a quick envelope */
+static const preset_t INIT_SOUND =
+    {"INIT", {0, 100, 0, 0, 127, 0, 0, 0, 20, 64, 100, 50, 64, 0, 0, 0, 60, 52, 0, 20, 90, 30, 0, 60, 0}};
+
 static preset_t cur;             /* the sound being played (edited by the pages; SAVE stores it) */
-static uint8_t cur_index;        /* which preset it came from: 0..7 F1..F8, 8..39 U01..U32 */
+static uint8_t cur_index;        /* which preset it came from: 0..15 F1..F16, 16..47 U01..U32, PRESET_NEW none */
 static preset_t user[NUSER];     /* the user slots as they are in the store */
 
-static void preset_init(preset_t *p)          /* INIT: every parameter at its default */
-{
-    uint32_t i;
-    memset(p, 0, sizeof *p);
-    str_cpy(p->name, "INIT", NAME_LEN);
-    for (i = 0; i < NSP; i++)
-        p->p[i] = SP[i].def;
-}
+static void preset_init(preset_t *p) { *p = INIT_SOUND; }   /* an empty user slot holds INIT */
 
 static void preset_check(preset_t *p)         /* never trust what was stored: ranges, the name's characters */
 {
@@ -221,9 +247,13 @@ static void preset_check(preset_t *p)         /* never trust what was stored: ra
         str_cpy(p->name, "INIT", NAME_LEN);
 }
 
-static void preset_label(char *b, unsigned max, uint32_t index)   /* "F1", "U07" */
+static void preset_label(char *b, unsigned max, uint32_t index)   /* "F1", "F16", "U07", "NEW" */
 {
     char t[4];
+    if (index >= NPRESETS) {
+        str_cpy(b, "NEW", max);
+        return;
+    }
     if (index < NFACT) {
         str_cpy(b, "F", max);
         fmt_int(t, (int32_t)index + 1);
@@ -234,14 +264,36 @@ static void preset_label(char *b, unsigned max, uint32_t index)   /* "F1", "U07"
     cat(b, t, max);
 }
 
-static const preset_t *preset_at(uint32_t index) { return index < NFACT ? &FACTORY[index] : &user[index - NFACT]; }
+static const preset_t *preset_at(uint32_t index)
+{
+    return index < NFACT ? &FACTORY[index] : index < NPRESETS ? &user[index - NFACT] : &INIT_SOUND;
+}
+
+/* the sound differs from the preset it came from (HOME's asterisk; HOME held reverts) */
+static int preset_edited(void)
+{
+    const preset_t *p = preset_at(cur_index);
+    return cur_index < NPRESETS && (memcmp(cur.p, p->p, sizeof cur.p) || !str_eq(cur.name, p->name));
+}
+
+/* the stored code of a preset (settings' last_preset): stable when the factory count changes. Factory f: f; user u:
+ * 64 + u. (Version 1 stored the plain index with 8 factory sounds: 0..7, 8..39.) */
+#define CODE_USER 64u
+static uint8_t preset_code(uint32_t index)
+{
+    return (uint8_t)(index < NFACT ? index : index < NPRESETS ? CODE_USER + index - NFACT : 0u);
+}
+static uint32_t preset_of_code(uint32_t code)
+{
+    return code < NFACT ? code : code >= CODE_USER && code < CODE_USER + NUSER ? NFACT + code - CODE_USER : 0u;
+}
 
 /* ------------------------------------------------------------ settings --- */
 #define NCHORDS 8
 #define CHORD_MAX 8
 static struct {
     int8_t g[NG];                /* GP order */
-    uint8_t last_preset;         /* loaded at power-on */
+    uint8_t last_preset;         /* loaded at power-on: its code (preset_code) */
     int8_t oct;                  /* OCT- / OCT+: -2 .. +2 */
     uint8_t trs_midi;            /* TRS MIDI IN on (1) / off (0) */
     uint8_t bpm;                 /* the arp's internal tempo, 40 .. 240 */
@@ -264,8 +316,7 @@ static void settings_check(void)
     uint32_t i, k;
     for (i = 0; i < NG; i++)
         set.g[i] = clamp8(set.g[i], &GP[i]);
-    if (set.last_preset >= NPRESETS)
-        set.last_preset = 0;
+    set.last_preset = preset_code(preset_of_code(set.last_preset));   /* (anything else: F1) */
     if (set.oct < -2 || set.oct > 2)
         set.oct = 0;
     set.trs_midi = set.trs_midi ? 1u : 0u;
@@ -286,7 +337,8 @@ static void settings_check(void)
 #define REC_SETTINGS 0u
 #define REC_USER0 1u
 #define USER_PER_REC 16u
-#define DATA_VER 1u
+#define DATA_VER 1u              /* the user presets' records */
+#define SET_VER 2u               /* the settings' record: 2 stores last_preset as a code (1: a plain index) */
 typedef struct {
     uint16_t ver, size;          /* DATA_VER; sizeof the payload that follows */
 } rec_head_t;
@@ -301,7 +353,7 @@ static struct {
 
 static int32_t data_save_settings(void)
 {
-    rec_set.h.ver = DATA_VER;
+    rec_set.h.ver = SET_VER;
     rec_set.h.size = sizeof set;
     memcpy(rec_set.s, &set, sizeof set);
     return store_save(REC_SETTINGS, APP_ID, &rec_set, sizeof rec_set);
@@ -328,6 +380,9 @@ static void data_load(void)                      /* defaults first, then what wa
         if ((uint32_t)n - sizeof(rec_head_t) < m)
             m = (uint32_t)n - sizeof(rec_head_t);
         memcpy(&set, rec_set.s, m);              /* a shorter (older) record leaves the newer fields at defaults */
+        if (rec_set.h.ver == 1u)                 /* version 1: 8 factory sounds, the plain index */
+            set.last_preset = set.last_preset < 8u ? set.last_preset
+                              : set.last_preset < 40u ? (uint8_t)(CODE_USER + set.last_preset - 8u) : 0u;
     }
     settings_check();
     for (i = 0; i < NUSER; i++)
@@ -343,6 +398,6 @@ static void data_load(void)                      /* defaults first, then what wa
             }
         }
     }
-    cur_index = set.last_preset;
+    cur_index = (uint8_t)preset_of_code(set.last_preset);
     cur = *preset_at(cur_index);
 }

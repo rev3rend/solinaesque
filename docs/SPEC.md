@@ -23,6 +23,7 @@ printed buttons; KNOB 1..4 always edit the four parameters of the page on screen
 | OCT− / OCT+ | press | Octave shift −2..+2 (shown on HOME) |
 | OCT− + OCT+ | hold 5 s | Reserved by the platform (recovery) |
 | HOME | press | HOME screen |
+| HOME | hold (≥ 0.5 s) | Revert: the stored preset again (HOME's `*` shows the sound differs from it) |
 | EDIT | press | STRINGS page: 16' level, 8' level, 4' level, shape |
 | SCL | press | FILTER page: cutoff, resonance, envelope amount, key tracking |
 | ENV | press | ENVELOPE page: attack, decay, sustain, release |
@@ -34,10 +35,12 @@ printed buttons; KNOB 1..4 always edit the four parameters of the page on screen
 | SEQ | press | Hold (latch) on / off: released keys keep sounding until hold is turned off or a new chord is played |
 | REC | press, play keys, press REC again | Chord memory: the held keys become the chord; then each key plays the chord transposed to it. REC held ≥ 0.5 s clears the chord. Up to 8 chords stored; the chord slot is picked on the ARP page's second view (v1: one chord, see open questions) |
 | PLAY | press | Arp clock: runs on the internal tempo, or follows MIDI clock when it is present; PLAY starts / stops a latched arp |
-| SAVE | press | Opens SAVE: PRESETS picks the user slot (U01..U32; starts at the current user slot, or U01 from a factory sound), SAVE again stores the sound under its current name (and the settings), any other button cancels; the keys keep playing |
+| SAVE | tap | The SAVE screen (below); the keys keep playing |
+| SAVE | hold (≥ 0.5 s) | INIT: a plain sound (8' saw, filter open, no LFO or effects), shown as NEW |
+| SAVE screen | PRESETS / ALGORITHM / KNOB 1..4 / SAVE | PRESETS: the user slot (U01..U32; from the current user slot, or U01). ALGORITHM: what to store (the current sound, F1..F16, INIT = clear the slot). KNOB 1: the name's cursor, KNOB 2: its letter (space A..Z 0..9 - .), KNOB 3: a word (STRINGS, PAD, CELLO ...), KNOB 4: clear. SAVE stores (the current sound then comes from that slot; a factory sound or INIT goes into the slot and the sound playing stays); any other button cancels |
 | SELECT | turn | Next / previous page (STRINGS, FILTER, ENVELOPE, LFO, FX 1, FX 2, ARP, GLOBAL); from HOME, clockwise opens the first, counter-clockwise the last. (The encoders have no push switch: HOME is the way back.) |
 | ALGORITHM | turn | Ensemble type: OFF, I (subtle), II (classic three-phase), III (deep), FLANGE (flanger only) |
-| PRESETS | turn | Browse sounds: F1..F8 (factory), U01..U32 (user); loads on turn. With ARP held: the arp tempo. On the SAVE screen: the target slot |
+| PRESETS | turn | Browse sounds: F1..F16 (factory), U01..U32 (user); loads on turn. With ARP held: the arp tempo. On the SAVE screen: the target slot |
 | KNOB 1..4 | turn | The four parameters of the current page (on HOME: 16', 8', 4', cutoff) |
 | MASTER pot | turn | Output level, with VOLUME (read by the app every 4 frames, smoothed, a small dead band) |
 
@@ -127,12 +130,12 @@ In the platform store (36 records of 4 KB) under this app's id:
 
 | Record | Contents |
 | --- | --- |
-| Settings | Global page (trigger mode, master tune, MIDI channel, volume), TRS MIDI on/off, the last saved preset (loaded at power-on), octave shift, arp settings and tempo, the 8 stored chords |
+| Settings | Global page (trigger mode, master tune, MIDI channel, volume), TRS MIDI on/off, the last saved preset (loaded at power-on; record version 2 stores it as a code: factory f, user 64 + u, so the factory count can change; a version 1 record is converted), octave shift, arp settings and tempo, the 8 stored chords |
 | User presets 1 | U01..U16 (a preset is every sound parameter of the pages and the ensemble type, plus an 11-character name: 40 bytes) |
 | User presets 2 | U17..U32 |
 
-Factory sounds F1..F8 are built in (read-only): e.g. CLASSIC, CELLO, VIOLINS, FULL ENS, DARK PAD, BRIGHT, SWELL,
-SPACE. A preset loads the sound; SAVE stores the current sound to a user slot. Damaged or foreign records fall back
+Factory sounds F1..F16 are built in (read-only): CLASSIC, CELLO, VIOLINS, FULL ENS, DARK PAD, BRIGHT, SWELL,
+SPACE, BRASS, ORGAN, HOLLOW, GLASS, BASSES, PLUCK, VOX, ECHOES (designed from the engine, to be tuned by ear).
 to the defaults. The settings record is written on every SAVE and when the GLOBAL or ARP page is left after a change
 (never on a knob turn: flash wear). Each record starts with a version and a payload size (append only).
 
@@ -163,7 +166,6 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
   REC + a black key) to be decided once it plays.
 - Whether the brass/organ "second section" of an ARP Omni style instrument is wanted later.
 - The factory sounds' exact values (tuned by ear in the emulator).
-- Naming user presets (v1 keeps the name of the sound that was saved: a name editor on the keys?).
 - The MASTER pot's real range on the unit (the app reads 0..1023 as silent..full).
 
 ## Out of scope for v1
@@ -199,6 +201,8 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
    exact silence, a stop silences it at once. Measured: the echo within 0.1 ms of DLY TIME, FEEDBACK 50 % gives
    half the level on the second echo. All three in float on the FPU (fx.c, no soft float).
    On the unit: F8 SPACE (ensemble, flanger and delay all on) with a big chord peaks at 25 % CPU.
-7. **Presets:** the factory sounds tuned, SAVE to user slots, PRESETS browsing.
+7. **Presets (done):** 16 factory sounds (8 redesigned, 8 new), naming on the SAVE screen, ALGORITHM there picks
+   what to store (restore a factory sound into a slot, INIT clears one), the edited `*` and HOME held to revert,
+   SAVE held for INIT. Tuning the factory sounds by ear on the unit stays open.
 8. **Hold, arpeggiator, chord memory:** latch, the arp with internal tempo and MIDI clock, MIDI note out, chords.
 9. **Polish:** ENVELOPE and FILTER drawings, the CC map in the docs, budgets checked, first install on a unit.

@@ -8,11 +8,23 @@
 #define PAL_AMBER 2u             /* tools/gen_ui_palettes.py PALETTES: GREY GREEN AMBER ... */
 #define HOLD_MS 500u             /* a button held this long is a hold (ARP: its page; REC: clear) */
 #define MSG_MS 1200u             /* a message stays on the bottom line this long */
+#define NAME_EDIT 10u            /* the characters of a name SAVE edits (a preset holds up to 11) */
+#define SRC_INIT (NFACT + 1u)    /* ui.save_src: INIT */
+
+/* the name editor: KNOB 2 steps through these at the cursor, KNOB 3 through the words */
+static const char NAME_CHARS[] = " ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-.";
+static const char *const NAME_WORDS[] = {"STRINGS", "PAD", "CELLO", "VIOLA", "BASSES", "BRASS", "ORGAN", "CHOIR",
+                                         "LEAD", "SWEEP", "DRONE", "ECHO", "SPACE", "MY SOUND"};
+#define NWORDS (sizeof NAME_WORDS / sizeof NAME_WORDS[0])
 
 static struct {
     uint8_t page;                /* PG_STR .. PG_GLO, or PG_HOME */
     uint8_t saving;              /* the SAVE screen is up */
     uint8_t save_slot;           /* 0..31: U01..U32 */
+    uint8_t save_src;            /* what SAVE stores: 0 the current sound, 1..NFACT a factory sound, NFACT + 1 INIT */
+    char nm[NAME_EDIT + 1];      /* the name being edited, padded with spaces */
+    uint8_t nm_cur;              /* the cursor in it */
+    uint8_t nm_word;             /* the word list's position (KNOB 3) */
     uint8_t hold, arp, chord;    /* SEQ (HOLD), ARP on, a chord stored (milestone 8) */
     uint8_t set_dirty;           /* the settings changed since they were saved */
     uint32_t last_buttons;
@@ -101,6 +113,8 @@ static void draw_home_top(void)                  /* the name, the preset */
     preset_label(b, sizeof b, cur_index);
     cat(b, "  ", sizeof b);
     cat(b, cur.name, sizeof b);
+    if (preset_edited())                         /* turned since it was loaded: HOME held reverts */
+        cat(b, " *", sizeof b);
     cv_text_in(0, 44, 240, &AF_M, b, T_TEXT, T_BG);
     cv_rect(16, 66, 208, 1, T_LINE);
     cv_blit(0, 0);
@@ -241,23 +255,54 @@ static void draw_foot(void)
     cv_blit(0, 214);
 }
 
+static const preset_t *save_source(void)          /* what SAVE would store */
+{
+    return !ui.save_src ? &cur : ui.save_src <= NFACT ? &FACTORY[ui.save_src - 1u] : &INIT_SOUND;
+}
+
+static void save_source_text(char *b, unsigned max)
+{
+    if (!ui.save_src) {
+        str_cpy(b, "THE CURRENT SOUND", max);
+        return;
+    }
+    if (ui.save_src > NFACT) {
+        str_cpy(b, "INIT (CLEAR THE SLOT)", max);
+        return;
+    }
+    preset_label(b, max, ui.save_src - 1u);
+    cat(b, " ", max);
+    cat(b, FACTORY[ui.save_src - 1u].name, max);
+}
+
 static void draw_save(void)
 {
-    char b[24];
+    char b[32];
+    uint32_t i;
     cv_begin(240, 124, T_BG);
-    cv_text_in(0, 8, 240, &AF_M, "SAVE TO", T_MID, T_BG);
+    cv_text_in(0, 2, 240, &AF_S, "SAVE TO", T_MID, T_BG);
     preset_label(b, sizeof b, NFACT + ui.save_slot);
-    cv_text_in(0, 36, 240, &AF_L, b, T_ACCENT, T_BG);
+    cv_text_in(0, 18, 240, &AF_L, b, T_ACCENT, T_BG);
     str_cpy(b, "NOW: ", sizeof b);
     cat(b, user[ui.save_slot].name, sizeof b);
-    cv_text_in(0, 78, 240, &AF_S, b, T_MID, T_BG);
-    cv_text_in(0, 100, 240, &AF_M, cur.name, T_TEXT, T_BG);
+    cv_text_in(0, 52, 240, &AF_S, b, T_MID, T_BG);
+    str_cpy(b, "FROM: ", sizeof b);
+    save_source_text(b + 6, sizeof b - 6);
+    cv_text_in(0, 70, 240, &AF_S, b, T_TEXT, T_BG);
+    for (i = 0; i < NAME_EDIT; i++) {            /* the name, a cell a character, the cursor under one */
+        char c[2] = {ui.nm[i], 0};
+        int32_t x = 40 + (int32_t)i * 16;        /* 10 cells of 16 px: room for a W */
+        if (c[0] != ' ')
+            cv_text_in(x, 92, 16, &AF_M, c, T_TEXT, T_BG);
+        cv_rect(x + 2, 113, 12, i == ui.nm_cur ? 3 : 1, i == ui.nm_cur ? T_ACCENT : T_LINE);
+    }
     cv_blit(0, 0);
     cv_begin(240, 116, T_BG);
-    cv_text_in(0, 20, 240, &AF_S, "PRESETS: SLOT", T_MID, T_BG);
-    cv_text_in(0, 40, 240, &AF_S, "SAVE: STORE", T_TEXT, T_BG);
-    cv_text_in(0, 60, 240, &AF_S, "ANY OTHER BUTTON: CANCEL", T_MID, T_BG);
-    cv_text_fit(10, 90, &AF_S, bottom_text(), T_TEXT, T_BG, 220);
+    cv_text_in(0, 4, 240, &AF_S, "K1 CURSOR   K2 LETTER   K3 WORD", T_MID, T_BG);
+    cv_text_in(0, 22, 240, &AF_S, "K4 CLEAR   PRESETS: SLOT", T_MID, T_BG);
+    cv_text_in(0, 40, 240, &AF_S, "ALGORITHM: WHAT TO STORE", T_MID, T_BG);
+    cv_text_in(0, 62, 240, &AF_S, "SAVE: STORE   OTHER BUTTONS: CANCEL", T_TEXT, T_BG);
+    cv_text_fit(10, 92, &AF_S, bottom_text(), T_TEXT, T_BG, 220);
     cv_blit(0, 124);
 }
 
@@ -282,14 +327,14 @@ static void ui_draw(void)
         ui.drawn_page = (uint8_t)screen;
     }
     if (ui.saving) {
-        s[0] = fnv(fnv(fnv_s(h0, user[ui.save_slot].name), ui.save_slot), m);
+        s[0] = fnv(fnv(fnv(fnv(fnv_s(fnv_s(h0, user[ui.save_slot].name), ui.nm), ui.save_slot), ui.save_src), ui.nm_cur), m);
         if (all || s[0] != ui.sig[0])
             draw_save();
         ui.sig[0] = s[0];
         return;
     }
     if (ui.page == PG_HOME) {
-        s[0] = fnv_s(fnv(h0, cur_index), cur.name);
+        s[0] = fnv(fnv_s(fnv(h0, cur_index), cur.name), (uint32_t)preset_edited());
         s[1] = sig_preset(h0);
         s[2] = fnv(fnv(fnv(fnv(fnv(note_dots_sig(), (uint32_t)set.oct), set.g[G_TRIG]), ui.hold), ui.arp), m);
         s[2] = fnv(fnv(fnv(s[2], (uint32_t)cur.p[P_ENS]), cpu_pct5()), vox.cap < MAX_SOUNDING);
@@ -322,22 +367,105 @@ static void ui_draw(void)
 }
 
 /* ------------------------------------------------------------ input --- */
+static void name_set(const char *src)              /* the editor's name from a preset's, padded */
+{
+    uint32_t i, end = 0;
+    for (i = 0; i < NAME_EDIT; i++) {
+        if (!end && !src[i])                     /* (never read past the terminator: ASan caught that once) */
+            end = 1;
+        ui.nm[i] = end ? ' ' : src[i];
+    }
+    ui.nm[NAME_EDIT] = 0;
+}
+
+static void save_open(void)
+{
+    ui.saving = 1;
+    ui.save_slot = cur_index >= NFACT && cur_index < NPRESETS ? (uint8_t)(cur_index - NFACT) : 0u;
+    ui.save_src = 0;
+    ui.nm_cur = 0;
+    ui.nm_word = NWORDS;                         /* (no word yet) */
+    name_set(cur.name);
+}
+
 static void save_store(void)
 {
-    int32_t r;
-    char b[8];
-    user[ui.save_slot] = cur;
+    preset_t p = *save_source();
+    int32_t r, k = NAME_EDIT;
+    char b[32], l[8];
+    while (k > 0 && ui.nm[k - 1] == ' ')         /* the name, trimmed (all spaces: NO NAME) */
+        k--;
+    memset(p.name, 0, sizeof p.name);
+    memcpy(p.name, ui.nm, (uint32_t)k);
+    if (!k)
+        str_cpy(p.name, "NO NAME", NAME_LEN);
+    user[ui.save_slot] = p;
     r = data_save_user(ui.save_slot);
-    cur_index = (uint8_t)(NFACT + ui.save_slot);
-    set.last_preset = cur_index;
-    r |= data_save_settings();
-    ui.set_dirty = 0;
-    preset_label(b, sizeof b, cur_index);
-    if (r)
-        msg("SAVE FAILED");
-    else
-        msg2("SAVED ", b);
+    preset_label(l, sizeof l, NFACT + ui.save_slot);
+    if (!ui.save_src) {                          /* the current sound: it now comes from that slot */
+        cur = p;
+        cur_index = (uint8_t)(NFACT + ui.save_slot);
+        set.last_preset = preset_code(cur_index);
+        r |= data_save_settings();
+        ui.set_dirty = 0;
+        str_cpy(b, "SAVED ", sizeof b);
+        cat(b, l, sizeof b);
+    } else {                                     /* a factory sound or INIT into the slot; the sound playing stays */
+        str_cpy(b, l, sizeof b);
+        cat(b, ui.save_src > NFACT ? " CLEARED" : " = ", sizeof b);
+        if (ui.save_src <= NFACT)
+            cat(b, p.name, sizeof b);
+    }
+    msg(r ? "SAVE FAILED" : b);
     ui.saving = 0;
+}
+
+static void save_encoders(void)                  /* the SAVE screen's knobs */
+{
+    int32_t s, k;
+    s = panel_enc(EN_PRESET);
+    if (s) {
+        k = ui.save_slot + s;
+        ui.save_slot = (uint8_t)(k < 0 ? 0 : k >= (int32_t)NUSER ? NUSER - 1 : k);
+    }
+    s = panel_enc(EN_ALGO);
+    if (s) {
+        k = ui.save_src + s;
+        ui.save_src = (uint8_t)(k < 0 ? 0 : k > (int32_t)SRC_INIT ? SRC_INIT : k);
+        name_set(save_source()->name);
+        ui.nm_cur = 0;
+    }
+    s = panel_enc(EN_K1);
+    if (s) {
+        k = ui.nm_cur + s;
+        ui.nm_cur = (uint8_t)(k < 0 ? 0 : k >= (int32_t)NAME_EDIT ? NAME_EDIT - 1 : k);
+    }
+    s = panel_enc(EN_K2);
+    if (s) {
+        const int32_t n = (int32_t)sizeof NAME_CHARS - 1;
+        int32_t at = 0;
+        while (at < n && NAME_CHARS[at] != ui.nm[ui.nm_cur])
+            at++;
+        at = ((at == n ? 0 : at) + s) % n;
+        ui.nm[ui.nm_cur] = NAME_CHARS[at < 0 ? at + n : at];
+    }
+    s = panel_enc(EN_K3);
+    if (s) {
+        if (ui.nm_word >= NWORDS)                /* the first turn: the first word (or, backwards, the last) */
+            k = s > 0 ? s - 1 : (int32_t)NWORDS + s;
+        else
+            k = (int32_t)ui.nm_word + s;
+        k %= (int32_t)NWORDS;
+        k = k < 0 ? k + (int32_t)NWORDS : k;
+        ui.nm_word = (uint8_t)k;
+        name_set(NAME_WORDS[k]);
+        ui.nm_cur = 0;
+    }
+    if (panel_enc(EN_K4)) {
+        name_set("");
+        ui.nm_cur = 0;
+    }
+    panel_enc(EN_SELECT);                        /* (not used here: dropped) */
 }
 
 static void ui_buttons(void)
@@ -385,22 +513,32 @@ static void ui_buttons(void)
                 msg2(set.oct > 0 ? "OCTAVE +" : "OCTAVE ", t);
                 break;
             }
-            case B_SAVE:
-                ui.saving = 1;
-                ui.save_slot = cur_index >= NFACT ? (uint8_t)(cur_index - NFACT) : 0u;
-                break;
-            }
+            }                                    /* (SAVE: a tap opens the SAVE screen, a hold loads INIT) */
         } else if (down && !ui.held_fired[b] && fm1_ms - ui.down_ms[b] >= HOLD_MS) {   /* held */
             ui.held_fired[b] = 1;
             if (b == B_ARP)
                 page_open(PG_ARP);
             else if (b == B_REC)
                 msg("CHORD CLEAR: SOON");
+            else if (b == B_HOME) {              /* revert: the stored preset again */
+                if (cur_index < NPRESETS) {
+                    cur = *preset_at(cur_index);
+                    snd_update();
+                    msg("REVERTED");
+                } else
+                    msg("NEW SOUND: NOTHING TO REVERT");
+            } else if (b == B_SAVE) {            /* INIT: a plain sound to start from */
+                cur = INIT_SOUND;
+                cur_index = PRESET_NEW;
+                snd_update();
+                msg("INIT SOUND");
+            }
         } else if (!down && was && !ui.held_fired[b]) {   /* released before the hold: a tap */
             if (b == B_ARP) {
                 ui.arp ^= 1u;
                 msg(ui.arp ? "ARP ON: SOON" : "ARP OFF");
-            }
+            } else if (b == B_SAVE)
+                save_open();
         }
     }
     ui.last_buttons = now;
@@ -409,6 +547,10 @@ static void ui_buttons(void)
 static void ui_encoders(void)
 {
     int32_t s, r;
+    if (ui.saving) {
+        save_encoders();
+        return;
+    }
     s = panel_enc(EN_SELECT);
     if (s && !ui.saving) {
         int32_t p = ui.page == PG_HOME ? (s > 0 ? -1 : NPAGES) : ui.page;

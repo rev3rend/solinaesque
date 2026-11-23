@@ -34,6 +34,8 @@ static void tap(uint32_t label)
     host_frame();
 }
 
+static uint32_t offsetof_last_preset(void) { return (uint32_t)((uint8_t *)&set.last_preset - (uint8_t *)&set); }
+
 static void power_cycle(void)                           /* the app's RAM gone, the flash kept */
 {
     memset(&ui, 0, sizeof ui);
@@ -102,7 +104,8 @@ static void screens(void)
     check("lazy: nothing changed, nothing sent to the panel", host_blits == 0u);
     host_turn(EN_K1, -3);
     host_frame();
-    check("HOME: KNOB 1 is 16', the drawbars follow", cur.p[P_R16] == 67 && host_blits == 1u);
+    check("HOME: KNOB 1 is 16', the drawbars follow (and the edited mark)", cur.p[P_R16] == FACTORY[0].p[P_R16] - 3 &&
+                                                                         host_blits == 2u && preset_edited());
 
     for (i = 0; i < sizeof OPEN / sizeof OPEN[0]; i++) {
         char b[64];
@@ -134,7 +137,7 @@ static void screens(void)
     tap(B_ENV);
     host_turn(EN_K1, 5);
     host_frame();
-    check("ENVELOPE: KNOB 1 is ATTACK", cur.p[P_ATK] == SP[P_ATK].def + 5);
+    check("ENVELOPE: KNOB 1 is ATTACK", cur.p[P_ATK] == FACTORY[0].p[P_ATK] + 5);
     {   /* the values read as a person would write them */
         char b[24];
         int good = 1;
@@ -361,6 +364,173 @@ static void persistence(void)
     tap(B_SAVE);
     check("no flash: SAVE fails visibly", str_eq(ui.msg, "SAVE FAILED"));
     flash_ok = 1;
+    host_nor_erase();
+    power_cycle();
+}
+
+/* ---------------------------------------------------------------- presets --- */
+static int32_t peak(const int32_t *b, uint32_t frames);   /* (sound helpers, below) */
+static void silence(void);
+static void presets(void)
+{
+    static int32_t pb[2u * 16384u];
+    uint32_t i, k, good = 1, names = 1;
+    host_nor_erase();
+    power_cycle();
+    for (i = 0; i < NFACT; i++) {                       /* the factory set: valid values, distinct short names */
+        preset_t p = FACTORY[i];
+        preset_check(&p);
+        good &= !memcmp(&p, &FACTORY[i], sizeof p);
+        names &= str_len(FACTORY[i].name) >= 1u && str_len(FACTORY[i].name) <= NAME_EDIT;
+        for (k = 0; k < i; k++)
+            names &= !str_eq(FACTORY[i].name, FACTORY[k].name);
+    }
+    check("16 factory sounds, every value in range", NFACT == 16u && good);
+    check("factory names: 1..10 characters, all different", names);
+    host_turn(EN_PRESET, 15);
+    host_frame();
+    check("PRESETS: F16 ECHOES after F1 .. F15", cur_index == 15u && str_eq(cur.name, "ECHOES"));
+    host_turn(EN_PRESET, 1);
+    host_frame();
+    check("PRESETS: then U01", cur_index == NFACT && !str_eq(ui.msg, ""));
+    {   /* every factory sound plays a chord at a sane level, bounded, no blow-up */
+        int ok = 1;
+        for (i = 0; i < NFACT; i++) {
+            int32_t pk;
+            silence();
+            preset_load(i);
+            fm1_in.notes = 1u << 7 | 1u << 11 | 1u << 14;   /* C4 E4 G4 */
+            host_render(pb, 16384);                     /* the first 370 ms (PLUCK has no sustain) */
+            pk = peak(pb, 16384);
+            if (pk < 1500 || pk > 32767) {
+                printf("  (%s: peak %d)\n", FACTORY[i].name, pk);
+                ok = 0;
+            }
+            fm1_in.notes = 0;
+        }
+        check("every factory sound plays a chord (peak 1 500 .. 32 767)", ok);
+        silence();
+    }
+
+    /* the edited mark and revert; INIT */
+    preset_load(2);                                     /* F3 VIOLINS */
+    host_frame();
+    check("a preset just loaded: not edited", !preset_edited());
+    tap(B_ENV);
+    host_turn(EN_K4, -10);
+    host_frame();
+    check("a knob turned: edited", preset_edited());
+    host_press(B_HOME, 1);
+    frames(40);
+    host_press(B_HOME, 0);
+    host_frame();
+    check("HOME held: reverted to the stored F3", !preset_edited() && cur.p[P_REL] == FACTORY[2].p[P_REL] &&
+                                                  ui.page == PG_HOME && str_eq(ui.msg, "REVERTED"));
+    host_press(B_SAVE, 1);
+    frames(40);
+    host_press(B_SAVE, 0);
+    host_frame();
+    check("SAVE held: the INIT sound, shown as NEW, no SAVE screen",
+          !ui.saving && cur_index == PRESET_NEW && !memcmp(cur.p, INIT_SOUND.p, sizeof cur.p) && str_eq(ui.msg, "INIT SOUND"));
+    host_png("build/shots/init.png");
+    tap(B_SAVE);
+    check("SAVE tapped: the SAVE screen, at U01 from a new sound", ui.saving && ui.save_slot == 0u && ui.save_src == 0u);
+
+    /* naming: KNOB 1 the cursor, KNOB 2 the letter, KNOB 3 a word, KNOB 4 clear */
+    host_turn(EN_K4, 1);                                /* clear */
+    host_frame();
+    check("SAVE: KNOB 4 clears the name", str_eq(ui.nm, "          "));
+    host_turn(EN_K2, 1);                                /* ' ' -> A (a frame between turns: they add up otherwise) */
+    host_frame();
+    host_turn(EN_K1, 1);
+    host_frame();
+    host_turn(EN_K2, 2);                                /* ' ' -> B */
+    host_frame();
+    host_turn(EN_K1, 1);
+    host_frame();
+    host_turn(EN_K2, -1);                               /* ' ' -> '.' (wraps backwards) */
+    host_frame();
+    check("SAVE: KNOB 1 moves, KNOB 2 picks letters (A, B, and . wrapping back)", ui.nm[0] == 'A' && ui.nm[1] == 'B' && ui.nm[2] == '.');
+    host_turn(EN_PRESET, 4);                            /* U05 */
+    host_frame();
+    tap(B_SAVE);
+    check("SAVE: stored in U05 as AB., the sound now from U05", !ui.saving && str_eq(user[4].name, "AB.") &&
+                                                              cur_index == NFACT + 4u && str_eq(cur.name, "AB."));
+    tap(B_SAVE);
+    host_turn(EN_K3, 1);                                /* the first word */
+    host_frame();
+    check("SAVE: KNOB 3 puts in a word", str_eq(ui.nm, "STRINGS   ") && ui.nm_cur == 0u);
+    tap(B_SAVE);
+    check("SAVE: the word stored, trimmed", str_eq(user[4].name, "STRINGS"));
+    tap(B_SAVE);
+    host_turn(EN_K4, 1);
+    host_frame();
+    tap(B_SAVE);
+    check("SAVE with an empty name: NO NAME", str_eq(user[4].name, "NO NAME"));
+
+    /* ALGORITHM picks what to store: a factory sound into a slot, or INIT to clear it; the sound playing stays */
+    {
+        preset_t before = cur;
+        tap(B_SAVE);
+        host_turn(EN_PRESET, 3);                        /* U08 */
+        host_turn(EN_ALGO, 3);                          /* F3 VIOLINS */
+        host_frame();
+        check("SAVE: ALGORITHM picks F3, the name follows", ui.save_src == 3u && str_eq(ui.nm, "VIOLINS   "));
+        tap(B_SAVE);
+        check("restore: U08 = F3 VIOLINS, the sound playing unchanged",
+              !memcmp(user[7].p, FACTORY[2].p, sizeof user[7].p) && str_eq(user[7].name, "VIOLINS") &&
+              !memcmp(&cur, &before, sizeof cur) && str_eq(ui.msg, "U08 = VIOLINS"));
+        tap(B_SAVE);
+        host_turn(EN_PRESET, 3);
+        host_turn(EN_ALGO, 100);                        /* past the factory sounds: INIT */
+        host_frame();
+        check("SAVE: ALGORITHM at the end is INIT", ui.save_src == SRC_INIT);
+        str_cpy(user[NUSER - 1].name, "WWWWWWWWWWW", NAME_LEN);   /* the screen at its widest */
+        host_turn(EN_PRESET, 40);
+        host_frame();
+        host_turn(EN_K4, 1);
+        host_frame();
+        for (k = 0; k < NAME_EDIT; k++) {
+            host_turn(EN_K2, 23);                       /* W */
+            host_frame();
+            host_turn(EN_K1, 1);
+            host_frame();
+        }
+        msg("SAVE CANCELLED");
+        host_frame();
+        host_png("build/shots/save_name.png");
+        check("SAVE: ten Ws typed", str_eq(ui.nm, "WWWWWWWWWW"));
+        lint("SAVE: naming, INIT, the longest names");
+        tap(B_HOME);                                    /* cancel; again: INIT into U08 */
+        check("SAVE cancelled by another button", !ui.saving && str_eq(ui.msg, "SAVE CANCELLED"));
+        tap(B_SAVE);
+        host_turn(EN_PRESET, 3);                        /* from U05: U08 */
+        host_frame();
+        host_turn(EN_ALGO, 100);
+        host_frame();
+        tap(B_SAVE);
+        check("restore: INIT clears U08", !memcmp(user[7].p, INIT_SOUND.p, sizeof user[7].p) &&
+                                          str_eq(user[7].name, "INIT") && str_eq(ui.msg, "U08 CLEARED"));
+    }
+    power_cycle();
+    check("power-on: U05 and U08 as they were stored, the sound from U05",
+          str_eq(user[4].name, "NO NAME") && !memcmp(user[7].p, INIT_SOUND.p, sizeof user[7].p) && cur_index == NFACT + 4u);
+
+    {   /* a version 1 settings record (8 factory sounds, a plain index): U02 was index 9 */
+        memset(&rec_set, 0, sizeof rec_set);
+        rec_set.h.ver = 1;
+        rec_set.h.size = sizeof set;
+        memcpy(rec_set.s, &set, sizeof set);
+        rec_set.s[offsetof_last_preset()] = 9;
+        store_save(REC_SETTINGS, APP_ID, &rec_set, sizeof rec_set);
+        power_cycle();
+        check("a version 1 settings record: its U02 is still U02", cur_index == NFACT + 1u);
+        rec_set.h.ver = 1;
+        rec_set.s[offsetof_last_preset()] = 5;
+        store_save(REC_SETTINGS, APP_ID, &rec_set, sizeof rec_set);
+        power_cycle();
+        check("a version 1 settings record: its F6 is still F6", cur_index == 5u);
+    }
     host_nor_erase();
     power_cycle();
 }
@@ -829,8 +999,9 @@ static void sound(void)
         fm1_in.notes = 1u << 7;                                     /* C4 */
         host_render(buf, ONE_S);
         rms_off = rms_l(buf + 2u * 8192u, 32768);
-        cur.p[P_ENS] = 2;                                           /* II, ENS DEPTH 60 % */
+        cur.p[P_ENS] = 2;                                           /* II, ENS DEPTH 60 %, ENS RATE ~0.6 / 6 Hz */
         cur.p[P_ENSD] = 60;
+        cur.p[P_ENSR] = 52;
         snd_update();
         host_render(buf, ONE_S);
         rms_ens = rms_l(buf + 2u * 8192u, 32768);
@@ -841,7 +1012,9 @@ static void sound(void)
         {   /* (zero crossings do not count a chorus's pitch: the fundamental stands well over 3 % either side) */
             double at = tone_db(buf + 2u * 8192u, 32768, 261.63), lo = tone_db(buf + 2u * 8192u, 32768, 261.63 * 0.97),
                    hi = tone_db(buf + 2u * 8192u, 32768, 261.63 * 1.03);
-            check("ensemble II: the pitch kept (C4 > 20 dB over +-3 %)", at - lo > 20.0 && at - hi > 20.0);
+            printf("  (ensemble II at C4: %.1f dB over -3 %%, %.1f dB over +3 %%)\n", at - lo, at - hi);
+            /* (a chorus wobbles the pitch ~+-1.6 %: its sidebands reach +-3 %; the fundamental leads them clearly) */
+            check("ensemble II: the pitch kept (C4 > 10 dB over +-3 %)", at - lo > 10.0 && at - hi > 10.0);
         }
         cur.p[P_ENSD] = 0;                                          /* no sweep: three still taps, mono */
         snd_update();
@@ -1172,6 +1345,7 @@ int main(void)
     screens();
     controls();
     persistence();
+    presets();
     sound();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 M-Vave-OP1 contributors
 // The browser emulator's WebAssembly without a browser: boot, the screen drawn, a key sounds and lights its LED, a
 // button lights its LED, MIDI IN sounds, the render keeps up with real time by a wide margin. Solinaesque's default
-// sound (F1 CLASSIC) has a ~110 ms attack and a ~330 ms shared release: the checks give it that time.
+// sound (F1 CLASSIC) has a ~150 ms attack and a ~810 ms shared release (silent by ~1.2 s): the checks give it 2 s.
 //   node web/emu/emu_test.mjs build/emu/emu.wasm
 import { readFileSync } from "node:fs";
 
@@ -14,7 +14,7 @@ const ex = instance.exports;
 ex._initialize();
 ex.web_boot();
 const N = 128;
-const RELEASE_Q = 400;                       // quanta of 128 frames (~1.2 s): past F1 CLASSIC's release
+const RELEASE_Q = 700;                       // quanta of 128 frames (~2 s): past F1 CLASSIC's release
 const render = (quanta) => {
   let peak = 0;
   for (let q = 0; q < quanta; q++) {
