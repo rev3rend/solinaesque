@@ -256,6 +256,7 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
     only until its tail has died (12 s), taking no input, then costs nothing. Measured: REV SIZE 20 falls 40 dB in
     0.58 s, 80 in 1.79 s; the tail's L/R correlation -0.6. In the emulator the reverb costs ~1..3 % of the render with
     27 keys. Presets now hold 32 parameters (user records version 3, SysEx format 3).
+    On the unit: F8 SPACE with the reverb added and a big chord peaks at 28 % CPU (25 % before the reverb).
 15. ~~Brass section~~ and 16. ~~Step sequencer~~: dropped (2026-11-23, the player's call).
 
 ## Milestones
