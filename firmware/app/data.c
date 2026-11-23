@@ -209,8 +209,8 @@ static const preset_t FACTORY[NFACT] = {
     {"HOLLOW", {0, 100, 0, 66, 95, 15, 0, 20, 90, 64, 100, 95, 45, 0, 90, 3, 50, 45, 0, 20, 100, 30, 15, 40, 1}},
     /* F12 a narrow pulse, 4' leading, a slow 585 ms attack, 717 Hz with strong resonance tracking the keys (by ear) */
     {"GLASS", {0, 60, 100, 85, 68, 80, 10, 80, 95, 64, 100, 100, 60, 0, 30, 0, 50, 52, 0, 20, 90, 50, 30, 70, 2}},
-    /* F13 16' first, rounded, for the left hand: instant attack, a 21 ms decay to full sustain (by ear) */
-    {"BASSES", {100, 50, 0, 0, 75, 10, 0, 60, 0, 26, 100, 80, 98, 10, 0, 15, 45, 52, 0, 20, 90, 30, 0, 60, 1}},
+    /* F13 16' first, rounded, for the left hand: instant attack, a 21 ms decay to 70 % sustain: a punch (by ear) */
+    {"BASSES", {100, 50, 0, 0, 75, 10, 0, 60, 0, 26, 70, 80, 98, 10, 0, 15, 45, 52, 0, 20, 90, 30, 0, 60, 1}},
     /* F14 no sustain: the filter envelope plucks, the echo carries it */
     {"PLUCK", {30, 100, 60, 0, 55, 30, 75, 40, 0, 75, 0, 75, 98, 0, 0, 0, 50, 52, 0, 20, 95, 35, 25, 50, 2}},
     /* F15 resonance at a vowel-like cutoff, the deep ensemble, late vibrato */
