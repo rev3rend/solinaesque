@@ -50,7 +50,7 @@ no reference into the chip's ROM, the app slot, at least 4 KiB of RAM and 8 KiB 
 only in `firmware/hal/`.
 
 `./build.sh --release 1.0` makes a release build: the app's version string becomes `v1.0` (`APP_VERSION`), the
-package `build/firmware-1.0.fwsc`, and `build/release-1.0/` holds what a release ships (the package, the app,
+package `build/solinaesque-1.0.fwsc` (everyday builds stay `build/firmware.fwsc`), and `build/release-1.0/` holds what a release ships (the package, the app,
 `SHA256SUMS`, `LICENSE`, `LICENSING.md`, `LICENSES/`). The package identity stays `FM-1_900`.
 
 Build options (environment, `0` or `1`; defaults in `firmware/src/firmware.c`):
