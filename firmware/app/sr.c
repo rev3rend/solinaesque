@@ -209,11 +209,3 @@ static void sr_tick(uint32_t now)                /* every frame: the reader gone
     }
 }
 
-/* the app's SysEx hook (app.h app_sysex, before the update entry): take the reader's frames, leave the rest */
-static void sr_sysex(void)
-{
-    const uint8_t *p;
-    uint32_t n;
-    if (ota_frame_get(&p, &n) && sr_frame(p, n, fm1_ms))
-        ota_frame_done();
-}

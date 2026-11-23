@@ -50,6 +50,8 @@ static void power_cycle(void)                           /* the app's RAM gone, t
     memset(dly_buf, 0, sizeof dly_buf);
     memset(&fxs, 0, sizeof fxs);
     memset(&flt, 0, sizeof flt);
+    memset(&ccs, 0, sizeof ccs);                        /* (the CC out state and its queue: RAM, gone too) */
+    memset((void *)&ccq, 0, sizeof ccq);
     cur_index = 0;
     fm1_in.notes = fm1_in.buttons = 0;
     host_boot();
@@ -174,7 +176,7 @@ static void screens(void)
     check("SELECT back: stays on the first page", ui.page == PG_STR);
     host_turn(EN_SELECT, 20);
     host_frame();
-    check("SELECT forward: up to the last page", ui.page == PG_GLO);
+    check("SELECT forward: up to the last page", ui.page == NPAGES - 1u);
     tap(B_ENV);
     host_turn(EN_K1, 5);
     host_frame();
@@ -443,8 +445,8 @@ static void persistence(void)
         rec_set.s[G_VOL] = 33;
         store_save(REC_SETTINGS, APP_ID, &rec_set, sizeof(rec_head_t) + NG);
         power_cycle();
-        check("an older, shorter settings record: its fields, defaults after",
-              set.g[G_VOL] == 33 && set.bpm == 120u && set.trs_midi == 1u);
+        check("an older, shorter settings record: its fields, defaults after (GLOBAL 2 too)",
+              set.g[G_VOL] == 33 && set.bpm == 120u && set.trs_midi == 1u && set.g2[G2_CCOUT] == 1 && set.g2[G2_ATD] == 50);
     }
     flash_ok = 0;
     tap(B_SAVE);
@@ -1935,6 +1937,279 @@ static void reader(void)
     power_cycle();
 }
 
+/* ---------------------------------------------------------------- MIDI control, velocity, aftertouch --- */
+static void cc_in(uint32_t cc, uint32_t v)               /* a CC in, taken by the ISR, applied by the main loop */
+{
+    host_midi(0xB0, cc, v);
+    host_render(buf_ctl, CTL);
+    host_frame();
+}
+
+static int out_next(uint32_t *st, uint32_t *d1, uint32_t *d2)
+{
+    uint32_t pkt;
+    if (!host_midi_out(&pkt))
+        return 0;
+    *st = (pkt >> 8) & 0xFFu;
+    *d1 = (pkt >> 16) & 0x7Fu;
+    *d2 = (pkt >> 24) & 0x7Fu;
+    return 1;
+}
+
+static int sysex_reply(uint32_t cmd, const uint8_t **body, uint32_t *n)   /* the last frame sent, if it is ours */
+{
+    uint32_t a = 0, b, last = 0xFFFFFFFFu;
+    for (b = 0; b < host_sx_out_len; b++)
+        if (host_sx_out[b] == 0xF0)
+            a = b, last = b;
+    if (last == 0xFFFFFFFFu)
+        return 0;
+    for (b = a; b < host_sx_out_len && host_sx_out[b] != 0xF7; b++)
+        ;
+    if (host_sx_out[a + 1u] != 0x7D || host_sx_out[a + 2u] != 0x53 || host_sx_out[a + 3u] != 0x4C ||
+        host_sx_out[a + 4u] != cmd)
+        return 0;
+    *body = host_sx_out + a + 5u;
+    *n = b - (a + 5u);
+    return 1;
+}
+
+static int32_t peak_of_note(uint32_t note, uint32_t vel)  /* a MIDI note's level, settled */
+{
+    static int32_t b[2u * 8192u];
+    int32_t pk;
+    host_midi(0x90, note, vel);
+    host_render(b, 8192);
+    pk = peak(b + 2u * 4096u, 4096);
+    host_midi(0x80, note, 0);
+    host_render(b, 4096);
+    return pk;
+}
+
+static void midi_control(void)
+{
+    uint32_t k, ok, st, d1, d2;
+    host_nor_erase();
+    power_cycle();
+    /* every control of the CC map, at both ends of its range */
+    for (ok = 1, k = 0; k < NCC; k++) {
+        if (CC_TGT[k] == CT_PLAY)
+            continue;
+        cc_in(CC_NUM[k], 0);
+        ok &= cc_get(k) == 0;
+        cc_in(CC_NUM[k], 127);
+        if (cc_get(k) != 127) {
+            printf("  (CC %u: %d at 127)\n", CC_NUM[k], cc_get(k));
+            ok = 0;
+        }
+    }
+    check("every CC of the map (40) sets its control across its range", ok && NCC == 40u);
+    check("CC 74 / 7 / 106 / 112: cutoff, volume, tempo, aftertouch mode reach their ends",
+          cur.p[P_CUT] == 127 && set.g[G_VOL] == 100 && set.bpm == 240u && set.g2[G2_AT] == 3);
+    cc_in(107, 127);                                      /* ARP on, then PLAY by CC */
+    cc_in(109, 0);
+    host_render(buf_ctl, CTL);
+    check("CC 109 below 64 stops the arp's transport, 64 and up runs it", arp.halt_pub == 1u);
+    cc_in(109, 127);
+    host_render(buf_ctl, CTL);
+    check("CC 109 at 127: running again", arp.halt_pub == 0u);
+    cc_in(107, 0);
+    host_nor_erase();
+    power_cycle();
+    out_flush();
+
+    /* MIDI out: a knob sends its CC, MIDI in is not echoed, CC OUT off sends nothing, a preset change only its PC */
+    tap(B_ENV);
+    out_flush();
+    host_turn(EN_K1, 1);
+    host_frame();
+    host_render(buf_ctl, CTL);
+    check("a knob turned sends its CC (ATTACK: CC 73, its value)", out_next(&st, &d1, &d2) && st == 0xB0u && d1 == 73u &&
+                                                                 d2 == (uint32_t)cc_get(cc_slot[73]) && !out_next(&st, &d1, &d2));
+    cc_in(74, 50);
+    host_render(buf_ctl, CTL);
+    check("a CC received is not sent back", !out_next(&st, &d1, &d2));
+    set.g2[G2_CCOUT] = 0;
+    host_turn(EN_K1, 1);
+    host_frame();
+    host_render(buf_ctl, CTL);
+    check("CC OUT off: nothing sent", !out_next(&st, &d1, &d2));
+    set.g2[G2_CCOUT] = 1;
+    tap(B_HOME);
+    host_render(buf_ctl, CTL);
+    out_flush();
+    host_turn(EN_PRESET, 1);
+    host_frame();
+    host_render(buf_ctl, CTL);
+    check("a preset change sends its Program Change only (F2: 1)", out_next(&st, &d1, &d2) && st == 0xC0u && d1 == 1u &&
+                                                                 !out_next(&st, &d1, &d2));
+    host_midi(0xC0, 2, 0);                                /* Program Change in */
+    host_render(buf_ctl, CTL);
+    host_frame();
+    host_render(buf_ctl, CTL);
+    check("Program Change 2 in: F3, not sent back", cur_index == 2u && !out_next(&st, &d1, &d2));
+    host_midi(0xC0, 20, 0);
+    host_render(buf_ctl, CTL);
+    host_frame();
+    check("Program Change 20: U05", cur_index == NFACT + 4u);
+    host_midi(0xC0, 100, 0);
+    host_render(buf_ctl, CTL);
+    host_frame();
+    check("Program Change past the last preset: ignored", cur_index == NFACT + 4u);
+    out_flush();
+
+    /* the SysEx dump */
+    {
+        static const uint8_t GET[] = {0x7D, 0x53, 0x4C, 0x01}, GETSLOT[] = {0x7D, 0x53, 0x4C, 0x03, 4};
+        uint8_t f[8 + SL_BODY + 2];
+        const uint8_t *body;
+        uint32_t n, len;
+        preset_t p;
+        preset_load(5);
+        host_frame();
+        host_sx_out_len = 0;
+        host_sysex_in(GET, sizeof GET);
+        host_frame();
+        host_frame();
+        check("SysEx: get the current sound -> 02 and its body (71 bytes)", sysex_reply(2, &body, &n) && n == SL_BODY);
+        check("SysEx: the body as specified (format 1, the name, 28 parameters)", body[0] == 1u && !memcmp(body + 1, "BRIGHT", 6) &&
+                                                                                body[13] == 28u);
+        check("SysEx: a parameter as two 7-bit bytes (16' 40: 168 = 1, 40)", body[14] == 1u && body[15] == 40u);
+        check("SysEx: it decodes back to the sound", !sl_decode(body, n, &p) && !memcmp(p.p, cur.p, sizeof p.p) &&
+                                                    str_eq(p.name, cur.name));
+        p = FACTORY[8];                                   /* a sound in: BRASS, renamed */
+        str_cpy(p.name, "FROM DAW", NAME_LEN);
+        f[0] = 0x7D, f[1] = 0x53, f[2] = 0x4C, f[3] = 0x02;
+        len = 4u + sl_encode(&p, f + 4);
+        host_sysex_in(f, len);
+        host_frame();
+        check("SysEx: a sound in becomes the current sound (NEW)", cur_index == PRESET_NEW && str_eq(cur.name, "FROM DAW") &&
+                                                                  !memcmp(cur.p, FACTORY[8].p, sizeof cur.p) &&
+                                                                  str_eq(ui.msg, "SOUND RECEIVED"));
+        f[len - 1u] ^= 1u;                                /* a bad checksum */
+        host_sysex_in(f, len);
+        host_frame();
+        check("SysEx: a bad checksum changes nothing, says so", str_eq(cur.name, "FROM DAW") && str_eq(ui.msg, "SYSEX SOUND REJECTED"));
+        f[3] = 0x04;                                      /* into user slot 8 */
+        f[4] = 7;
+        len = 5u + sl_encode(&p, f + 5);
+        host_sysex_in(f, len);
+        host_frame();
+        check("SysEx: a slot in is stored (U08)", str_eq(user[7].name, "FROM DAW") && str_eq(ui.msg, "RECEIVED U08"));
+        power_cycle();
+        check("SysEx: the slot kept over a power cycle", str_eq(user[7].name, "FROM DAW") && !memcmp(user[7].p, FACTORY[8].p, sizeof p.p));
+        host_sx_out_len = 0;
+        host_sysex_in(GETSLOT, sizeof GETSLOT);
+        host_frame();
+        host_frame();
+        check("SysEx: get slot 4 -> 04 4 and its body", sysex_reply(4, &body, &n) && body[0] == 4u &&
+                                                        !sl_decode(body + 1, n - 1u, &p) && str_eq(p.name, user[4].name));
+        host_sx_room = 0;                                 /* no room: the reply waits, then goes */
+        host_sx_out_len = 0;
+        host_sysex_in(GET, sizeof GET);
+        frames(10);
+        check("SysEx: no room in the queue: the reply waits", host_sx_out_len == 0u && sl.pending);
+        host_sx_room = 64;
+        frames(2);
+        check("SysEx: room again: the reply goes", host_sx_out_len > 0u && !sl.pending);
+        host_sx_room = 0;
+        host_sysex_in(GET, sizeof GET);
+        frames(80);
+        check("SysEx: nobody reads it for a second: given up", !sl.pending);
+        host_sx_room = 64;
+        host_sx_out_len = 0;
+    }
+
+    /* velocity: OFF, LEVEL, FILTER; the panel plays at 100 */
+    host_nor_erase();
+    power_cycle();
+    voice(0, 100, 0, 0, 0);
+    {
+        int32_t a, b;
+        int32_t i1, i2;
+        set.g2[G2_VEL] = 0;
+        snd_update();
+        a = peak_of_note(60, 127);
+        b = peak_of_note(60, 32);
+        check("VELOCITY OFF: hard and soft notes alike (an organ, within 2 %)", abs(a - b) * 50 < a && a > 1000);
+        set.g2[G2_VEL] = 1;
+        snd_update();
+        a = peak_of_note(60, 127);
+        b = peak_of_note(60, 32);
+        printf("  (VELOCITY LEVEL: 127 -> %d, 32 -> %d, %.2f x)\n", a, b, (double)a / b);
+        check("VELOCITY LEVEL: 127 is 4 x 32 (+-10 %)", fabs((double)a / b - 4.0) < 0.4);
+        set.g2[G2_VEL] = 2;
+        snd_update();
+        cur.p[P_CUT] = 60;
+        snd_update();
+        host_midi(0x90, 60, 127);
+        host_render(buf_ctl, CTL);
+        i1 = flt.idx_pub;
+        host_midi(0x80, 60, 0);
+        host_midi(0x90, 60, 30);
+        host_render(buf_ctl, CTL);
+        i2 = flt.idx_pub;
+        host_midi(0x80, 60, 0);
+        printf("  (VELOCITY FILTER: 127 -> %.1f, 30 -> %.1f cutoff steps)\n", i1 / 256.0, i2 / 256.0);
+        check("VELOCITY FILTER: harder notes open the filter (127 vs 30: ~23 steps)", i1 - i2 > 20 * 256 && i1 - i2 < 26 * 256);
+        fm1_in.notes = 1u;
+        host_render(buf_ctl, CTL);
+        fm1_in.notes = 0;
+        check("the panel keys play at velocity 100 (the filter as set)", vox.last_vel == 100u && flt.idx_pub == 60 * 256);
+        set.g2[G2_VEL] = 0;
+        snd_update();
+        silence();
+    }
+    /* aftertouch: vibrato, cutoff; channel and polyphonic; it goes with the note; OFF */
+    {
+        int32_t cmax = 0;
+        uint32_t b;
+        set.g2[G2_AT] = 1;                                /* VIBRATO, AT DEPTH 50 %: +-25 cents at full */
+        set.g2[G2_ATD] = 50;
+        snd_update();
+        host_midi(0x90, 60, 100);
+        host_midi(0xD0, 127, 0);
+        for (b = 0; b < FS / CTL; b++) {
+            host_render(buf_ctl, CTL);
+            cmax = abs(vox.cents_pub) > cmax ? abs(vox.cents_pub) : cmax;
+        }
+        check("AFTERTOUCH VIBRATO, channel pressure 127, depth 50 %: +-25 cents", cmax >= 23 && cmax <= 25);
+        host_midi(0xD0, 0, 0);
+        set.g2[G2_AT] = 2;                                /* CUTOFF: +32 steps at full */
+        snd_update();
+        cur.p[P_CUT] = 40;
+        snd_update();
+        host_render(buf, 4096);
+        host_midi(0xA0, 60, 127);                         /* polyphonic, on the held note */
+        host_render(buf, 4096);
+        check("AFTERTOUCH CUTOFF, poly pressure 127 on the held note: +32 steps (127/128 of it)", abs(flt.idx_pub - 72 * 256) <= 256);
+        host_midi(0x80, 60, 0);                           /* the note goes: its pressure too */
+        host_render(buf, 4096);
+        check("poly pressure goes with its note", vox.pat_max == 0u && flt.idx_pub < 41 * 256);
+        set.g2[G2_AT] = 0;
+        snd_update();
+        host_midi(0x90, 60, 100);
+        host_midi(0xD0, 127, 0);
+        host_render(buf, 4096);
+        check("AFTERTOUCH OFF: pressure does nothing", flt.idx_pub == 40 * 256 && vox.cents_pub == 0);
+        host_midi(0xD0, 0, 0);
+        host_midi(0x80, 60, 0);
+        silence();
+    }
+    /* GLOBAL 2: GLO twice, stored on leaving */
+    tap(B_GLO);
+    tap(B_GLO);
+    check("GLO twice: GLOBAL 2 (MIDI)", ui.page == PG_MIDI);
+    host_turn(EN_K1, 3);
+    host_frame();
+    host_png("build/shots/global2.png");
+    tap(B_HOME);
+    power_cycle();
+    check("GLOBAL 2 stored: VELOCITY BOTH after a power cycle", set.g2[G2_VEL] == 3);
+    host_nor_erase();
+    power_cycle();
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -1945,6 +2220,7 @@ int main(void)
     presets();
     sequencer();
     reader();
+    midi_control();
     sound();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

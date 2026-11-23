@@ -15,7 +15,9 @@ memory, the arp and every effect). The full description: [docs/SPEC.md](docs/SPE
 - **Effects:** the three-phase string ensemble (I, II, III), a flanger and a 1 s stereo tape-like delay.
 - **Playing:** HOLD, chord memory, an arpeggiator (five modes, internal tempo or MIDI clock), octave shift.
 - **Sounds:** 16 factory sounds, 32 named user slots; settings and chords kept over power-off.
-- **MIDI:** notes, pedal, bend, mod wheel and a CC map in over USB and TRS; the keys and the arp out over USB.
+- **MIDI:** notes, pedal, bend, mod wheel, velocity and (poly) aftertouch, a CC for every control and Program Change
+  in over USB and TRS; the keys, the arp, every knob's CC and preset changes out over USB; presets as SysEx
+  (`tools/solinaesque_presets.py backup presets.json` saves the 32 user slots, `restore` puts them back).
 - **Accessible:** speaks through the [fm1-reader](https://github.com/charlesvestal/fm1-reader) screen reader: connect
   the FM-1 by USB, open <https://charlesvestal.github.io/fm1-reader/> in Chrome or Edge, and every page, knob,
   preset and message is spoken in full words. The FM-1 stays silent on USB until a reader asks.

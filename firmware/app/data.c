@@ -8,7 +8,7 @@
 /* ------------------------------------------------------------ parameters --- */
 /* a parameter's kind: how its stored int8 reads on the screen and what it means to the engine */
 enum { K_PCT, K_BIP, K_ATK, K_DEC, K_REL, K_HZ, K_CUT, K_DLY, K_MS, K_SHAPE, K_TRIG, K_TUNE, K_CH, K_ARPM, K_ARPR,
-       K_OCT };
+       K_OCT, K_VELM, K_ATM, K_ONOFF };
 
 typedef struct {
     const char *name;
@@ -48,9 +48,17 @@ static const param_t GP[NG] = {
 };
 
 /* pages: four parameters each, KNOB 1..4 top to bottom; 0..5 the sound's, 6..7 the settings' */
-enum { PG_STR, PG_FLT, PG_ENV, PG_LFO, PG_FX1, PG_FX2, PG_ARP, PG_GLO, NPAGES, PG_HOME = NPAGES };
+/* the MIDI settings on GLOBAL 2 (GLO pressed again): kept at the end of the settings record (set.g2: append only) */
+enum { G2_VEL, G2_AT, G2_ATD, G2_CCOUT, NG2 };
+static const param_t GP2[NG2] = {
+    {"VELOCITY", K_VELM, 0, 3, 0, 1},  {"AFTERTOUCH", K_ATM, 0, 3, 0, 1}, {"AT DEPTH", K_PCT, 0, 100, 50, 1},
+    {"CC OUT", K_ONOFF, 0, 1, 1, 1},
+};
+
+enum { PG_STR, PG_FLT, PG_ENV, PG_LFO, PG_FX1, PG_FX2, PG_ARP, PG_GLO, PG_MIDI, NPAGES, PG_HOME = NPAGES };
 static const char *const PAGE_NAME[NPAGES] = {"STRINGS", "FILTER", "ENVELOPE", "LFO", "FX 1", "FX 2", "ARP",
-                                              "GLOBAL"};
+                                              "GLOBAL",
+                                              "GLOBAL 2"};
 
 /* the exponential curves: lo * r^x, r in Q16 so that x = 127 lands on hi (ratio = (hi / lo)^(1 / 127)); an integer
  * loop instead of a libm the target does not have, main loop only (<= 127 multiplies) */
@@ -156,6 +164,17 @@ static void pv_text(char *b, unsigned max, const param_t *p, int32_t x)
         return;
     case K_ARPM: str_cpy(b, ARPM_NAME[x % 5], max); return;
     case K_ARPR: str_cpy(b, ARPR_NAME[x % 6], max); return;
+    case K_VELM: {
+        static const char *const N[4] = {"OFF", "LEVEL", "FILTER", "BOTH"};
+        str_cpy(b, N[x & 3], max);
+        return;
+    }
+    case K_ATM: {
+        static const char *const N[4] = {"OFF", "VIBRATO", "CUTOFF", "BOTH"};
+        str_cpy(b, N[x & 3], max);
+        return;
+    }
+    case K_ONOFF: str_cpy(b, x ? "ON" : "OFF", max); return;
     case K_OCT:
         fmt_int(t, x);
         str_cpy(b, t, max);
@@ -224,6 +243,8 @@ static const preset_t INIT_SOUND =
     {"INIT", {0, 100, 0, 0, 127, 0, 0, 0, 20, 64, 100, 50, 64, 0, 0, 0, 60, 52, 0, 20, 90, 30, 0, 60, 0}};
 
 static preset_t cur;             /* the sound being played (edited by the pages; SAVE stores it) */
+static uint32_t snd_epoch;       /* bumped when the whole sound is replaced (a preset, a revert, INIT, a dump): MIDI
+                                  * out then sends a Program Change, not every parameter */
 static uint8_t cur_index;        /* which preset it came from: 0..15 F1..F16, 16..47 U01..U32, PRESET_NEW none */
 static preset_t user[NUSER];     /* the user slots as they are in the store */
 
@@ -299,6 +320,7 @@ static struct {
     uint8_t bpm;                 /* the arp's internal tempo, 40 .. 240 */
     uint8_t chord_n[NCHORDS];    /* notes in each stored chord (0: none) */
     int8_t chord[NCHORDS][CHORD_MAX];   /* semitones above the chord's lowest note */
+    int8_t g2[NG2];              /* (version 2, appended) GLOBAL 2: velocity, aftertouch, its depth, CC out */
 } set;
 
 static void settings_init(void)
@@ -309,6 +331,8 @@ static void settings_init(void)
         set.g[i] = GP[i].def;
     set.trs_midi = 1;
     set.bpm = 120;
+    for (i = 0; i < NG2; i++)
+        set.g2[i] = GP2[i].def;
 }
 
 static void settings_check(void)
@@ -316,6 +340,8 @@ static void settings_check(void)
     uint32_t i, k;
     for (i = 0; i < NG; i++)
         set.g[i] = clamp8(set.g[i], &GP[i]);
+    for (i = 0; i < NG2; i++)
+        set.g2[i] = clamp8(set.g2[i], &GP2[i]);
     set.last_preset = preset_code(preset_of_code(set.last_preset));   /* (anything else: F1) */
     if (set.oct < -2 || set.oct > 2)
         set.oct = 0;

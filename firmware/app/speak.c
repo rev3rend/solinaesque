@@ -35,7 +35,8 @@ static const char *const SPK_TOK[][2] = {
     {"ct", "cents"},               {"K1", "knob 1"},
     {"K2", "knob 2"},              {"K3", "knob 3"},
     {"K4", "knob 4"},              {"*", "edited"},
-    {"FLANGE", "flanger"},         {"OMNI", "omni"},
+    {"FLANGE", "flanger"},         {"AT", "aftertouch"},
+    {"CC", "C C"},         {"OMNI", "omni"},
 };
 #define NSPK (sizeof SPK_TOK / sizeof SPK_TOK[0])
 
@@ -137,7 +138,8 @@ static void spk_param(char *d, unsigned max, const param_t *p, int32_t v)   /* "
 static void spk_page(char *d, unsigned max)       /* "envelope page. attack ..., decay ..., sustain ..., release ..." */
 {
     static const char *const NAME[NPAGES] = {"strings", "filter", "envelope", "L F O", "effects 1, ensemble and flanger",
-                                             "effects 2, delay", "arpeggiator", "global"};
+                                             "effects 2, delay", "arpeggiator", "global",
+                                             "global 2, MIDI"};
     uint32_t r;
     int8_t *v;
     str_cpy(d, NAME[ui.page], max);

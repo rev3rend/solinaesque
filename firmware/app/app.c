@@ -9,6 +9,7 @@
  *   sound.c   the audio ISR: the divide-down oscillator bank, the registers, the key gates, the shared envelope
  *   sr.c      the screen reader link (fm1-reader protocol): SysEx in and out, never blocking
  *   ui.c      the panel: controls, LEDs, the HOME, page and SAVE screens
+ *   dump.c    presets over SysEx: the current sound or a user slot, sent and received
  *   speak.c   what the screen reader says: what changed on the screen, in full words */
 #ifndef APP_NAME
 #define APP_NAME "SOLINAESQUE"
@@ -25,6 +26,7 @@
 #include "sound.c"
 #include "sr.c"
 #include "ui.c"
+#include "dump.c"
 #include "speak.c"
 
 static void app_init(void)
@@ -39,9 +41,18 @@ static void app_init(void)
 static void app_frame(void)
 {
     ui_frame();
+    sl_frame_tick();                             /* (dump.c: a SysEx reply waiting) */
     speak_frame();                               /* (speak.c: what changed, to a listening screen reader) */
 }
 
-static void app_sysex(void) { sr_sysex(); }      /* the reader's frames; the rest stays for the update entry */
+/* the app's SysEx (app.h: before the update entry): the screen reader's (sr.c) and the presets' (dump.c); any other
+ * frame stays for the update entry */
+static void app_sysex(void)
+{
+    const uint8_t *p;
+    uint32_t n;
+    if (ota_frame_get(&p, &n) && (sr_frame(p, n, fm1_ms) || sl_frame(p, n)))
+        ota_frame_done();
+}
 
 static const char *app_fault_name(void) { return APP_NAME " CRASH"; }

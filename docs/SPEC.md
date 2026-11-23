@@ -29,7 +29,7 @@ printed buttons; KNOB 1..4 always edit the four parameters of the page on screen
 | ENV | press | ENVELOPE page: attack, decay, sustain, release |
 | LFO | press | LFO page: rate, vibrato depth, PWM depth, delay (fade-in) |
 | FX | press; press again | FX 1 page (ensemble depth, ensemble rate, flanger amount, flanger rate); pressed on FX 1: FX 2 page (delay time, delay feedback, delay mix, delay tone); pressed on FX 2: back to FX 1 |
-| GLO | press | GLOBAL page: trigger mode (retrig / legato), master tune, MIDI channel, volume |
+| GLO | press; press again | GLOBAL page: trigger mode (retrig / legato), master tune, MIDI channel, volume; again: GLOBAL 2: VELOCITY, AFTERTOUCH, AT DEPTH, CC OUT |
 | ARP | tap | Arpeggiator on / off |
 | ARP | hold (≥ 0.5 s) | ARP page: mode (up, down, up-down, random, as played), rate (divisions of the tempo), octaves 1..4, gate |
 | SEQ | press | Hold (latch) on / off: released keys keep sounding until hold is turned off or a new chord is played |
@@ -151,17 +151,38 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
 - **In (USB and TRS):** note on / off on the chosen channel (1..16 or OMNI); sustain pedal (CC64) holds notes; mod
   wheel (CC1) adds vibrato; pitch bend ±2 semitones (all oscillators); CC121 resets bend, mod wheel and pedal; the CC
   map below; MIDI clock, start, stop, continue for the arp (milestone 8). TRS MIDI IN is on by default.
-- **CC map** (0..127 across each parameter's range, on the chosen channel; the screen follows):
+- **CC map** (every control, 0..127 across its range, on the chosen channel; received, and sent when the panel changes
+  it, with CC OUT on; a CC received is not sent back; the screen and the screen reader follow):
 
-  | CC | Parameter | CC | Parameter | CC | Parameter | CC | Parameter |
+  | CC | Control | CC | Control | CC | Control | CC | Control |
   | --- | --- | --- | --- | --- | --- | --- | --- |
-  | 12 | 16' | 74 | CUTOFF | 73 | ATTACK | 76 | LFO RATE |
-  | 13 | 8' | 71 | RESONANCE | 75 | DECAY | 77 | VIBRATO |
-  | 14 | 4' | 20 | ENV AMOUNT | 70 | SUSTAIN | 78 | PWM |
-  | 15 | SHAPE | 21 | KEY TRACK | 72 | RELEASE | 93 | ENS DEPTH |
+  | 12 | 16' | 73 | ATTACK | 22 | ENS RATE | 102 | ARP MODE |
+  | 13 | 8' | 75 | DECAY | 23 | FLANGER | 103 | ARP RATE |
+  | 14 | 4' | 70 | SUSTAIN | 24 | FLG RATE | 104 | ARP OCTAVES |
+  | 15 | SHAPE | 72 | RELEASE | 25 | DLY TIME | 105 | ARP GATE |
+  | 74 | CUTOFF | 76 | LFO RATE | 26 | FEEDBACK | 106 | TEMPO (40..240 BPM) |
+  | 71 | RESONANCE | 77 | VIBRATO | 27 | DLY MIX | 107 | ARP on (>= 64) |
+  | 20 | ENV AMOUNT | 78 | PWM | 28 | DLY TONE | 108 | HOLD (>= 64) |
+  | 21 | KEY TRACK | 79 | LFO DELAY | 29 | ENSEMBLE type | 109 | PLAY: run (>= 64) / stop |
+  | 93 | ENS DEPTH | 30 | TRIGGER | 31 | TUNE | 110 | OCTAVE shift (-2..+2) |
+  | 7 | VOLUME | 111 | VELOCITY mode | 112 | AFTERTOUCH mode | 113 | AT DEPTH |
 
-  (CC1 mod wheel, CC64 sustain, CC120 / 123 all off, CC121 reset are handled in the audio ISR; a mapped CC is handed
-  to the main loop, which owns the parameters.)
+  CC1 mod wheel, CC64 sustain, CC120 / 123 all off, CC121 reset are handled in the audio ISR; a mapped CC is handed
+  to the main loop (a counter per control), which owns the parameters. Sending goes the other way through a queue
+  to the ISR, which sends it after its notes (one context for MIDI out). A whole new sound (a preset, a revert, INIT,
+  a SysEx sound) sends only its Program Change, never all 40 controls.
+- **Program Change:** in, 0..15 load F1..F16 and 16..47 U01..U32 (higher: ignored); out when the panel changes the
+  preset (not when a Program Change came in).
+- **Velocity and aftertouch** (GLOBAL 2): VELOCITY OFF (an organ) / LEVEL (each note's own level, velocity / 127;
+  notes from chord memory or arp octaves take the latest velocity) / FILTER (the latest note's velocity: the filter
+  envelope scaled by velocity / 100, the cutoff moved -25..+7 steps, centred on the panel keys' 100) / BOTH.
+  AFTERTOUCH OFF / VIBRATO (up to +-50 cents x AT DEPTH, on the LFO) / CUTOFF (up to +64 steps x AT DEPTH) / BOTH,
+  from the stronger of channel pressure and the strongest held note's polyphonic pressure, smoothed per block; a
+  note's pressure goes with it. The FM-1's own keys have no velocity (100) or pressure.
+- **SysEx presets** (dump.c, `F0 7D 53 4C <cmd> ... F7`): 01 get the current sound (-> 02); 02 <sound> make it current
+  (NEW); 03 <slot> get a user slot (-> 04); 04 <slot> <sound> store it. A sound: 01, the name (12 bytes), 28, each
+  parameter as two 7-bit bytes (v + 128), a checksum (the body's sum & 7F). Malformed frames change nothing.
+  `tools/solinaesque_presets.py` backs the 32 user slots up to JSON and restores them.
 - **Out (USB):** the panel keys (as the chord expands them, HOLD keeping them) or, with the arp on, its notes, as note on / off (velocity 100) on the chosen channel (OMNI: channel 1); notes received over MIDI are not echoed (no loops through a DAW); a stop sends every off. No clock out in v1.
 - All notes off on MIDI CC123 and when the channel changes.
 
@@ -196,12 +217,12 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
     answer byte for byte, silence before HELLO and after BYE / 5 s, every page's readout within the rules,
     debouncing, warnings, a full queue, and the update frames left alone. On the unit: the fm1-reader web page connects
     and speaks it (2026-11-22); a full re-install through the new hook works.
-11. **Full MIDI control:** a CC for every parameter (sound, effects, LFO, arp, global), Program Change for presets,
+11. **Full MIDI control (done):** a CC for every parameter (sound, effects, LFO, arp, global), Program Change for presets,
     both received and sent (a knob turned sends its CC, a preset change its Program Change), and a SysEx dump of a
     preset (send and receive).
-12. **Velocity and aftertouch** (MIDI only; the keys have none), switchable: velocity to nothing (organ), note level,
+12. **Velocity and aftertouch (done)** (MIDI only; the keys have none), switchable: velocity to nothing (organ), note level,
     filter envelope, or both; aftertouch (channel and polyphonic) to vibrato, cutoff, or both. Settings on a second
-    GLOBAL page.
+    GLOBAL page (GLOBAL 2, the 9th page; stored at the end of the settings record).
 13. **Ping-pong delay and MIDI clock out:** a delay mode (stereo / ping-pong); clock out at the internal tempo while
     the arp runs.
 14. **Reverb** after the delay (size, damping, mix), its CPU measured on the unit.

@@ -25,6 +25,8 @@
 #define REG_AMP 5000             /* one register at 100 %, Q15 peak (before VOLUME and MASTER): F1 CLASSIC's single
                                   * note ~ -18 dBFS at the default VOLUME, a big chord into the soft knee */
 
+#define NCC 40u                  /* controls in the CC map (CC_NUM, below) */
+
 /* phase increments of MIDI notes 0..11 (2^32 f / FS); octave k is these << k */
 static const uint32_t INC0[12] = {796254u, 843601u, 893765u, 946911u, 1003217u, 1062871u,
                                   1126073u, 1193033u, 1263974u, 1339134u, 1418763u, 1503127u};
@@ -48,6 +50,8 @@ static struct {
     uint32_t lfo_inc;            /* the LFO's phase step per block */
     int32_t vib_c, pwm;          /* VIBRATO as cents (0..50: 100 % is +-50), PWM % (100 %: the width +-40 %) */
     int32_t lfo_fade;            /* the LFO's fade-in per block after an attack, Q16 (65536: at once) */
+    uint32_t vel_mode, at_mode;  /* GLOBAL 2: bit 0 level / vibrato, bit 1 filter / cutoff */
+    int32_t at_vib, at_cut;      /* aftertouch at full: cents of vibrato (0..50), cutoff steps (0..64), by AT DEPTH */
 } snd;
 
 /* A band-limited saw (PolyBLEP): the naive ramp, -32768 at p = 0 rising to 32767, with its jump at the wrap smoothed
@@ -122,6 +126,7 @@ static const float FILT_G[128] = {
 static struct {
     float ic1, ic2;              /* the filter's two integrator states */
     uint32_t top;                /* the highest note sounding (key tracking), kept through the release */
+    int32_t vel_steps, env_q7, at_steps;   /* velocity and aftertouch on the cutoff, set per block (app_audio) */
     volatile int32_t idx_pub;    /* ISR -> main loop, tests: the cutoff index this block, Q8 (0 .. 127 x 256) */
 } flt;
 
@@ -130,8 +135,10 @@ static struct {
  * highest note's distance from C4 (100 %: the cutoff follows the keys); the coefficients once per block. */
 static FM1_FPU __attribute__((noinline)) void filt_block(int32_t *mix, uint32_t n, int32_t env)
 {
-    float idx = (float)snd.f_cut + (float)snd.f_env * 1.27f * ((float)env * (1.0f / ENV_ONE)) +
-                (float)snd.f_kt * 0.01f * CUT_PER_SEMI * (float)((int32_t)flt.top - 60);
+    float idx = (float)snd.f_cut + (float)snd.f_env * 1.27f * ((float)env * (1.0f / ENV_ONE)) * (float)flt.env_q7 *
+                    (1.0f / 128.0f) +
+                (float)snd.f_kt * 0.01f * CUT_PER_SEMI * (float)((int32_t)flt.top - 60) + (float)flt.vel_steps +
+                (float)flt.at_steps;
     float g, k, a1, a2, a3, ic1 = flt.ic1, ic2 = flt.ic2, fr;
     int32_t i;
     uint32_t j;
@@ -192,8 +199,16 @@ static struct {
     volatile int32_t cents_pub;      /* ISR -> tests: the pitch offset this block, cents */
     volatile uint32_t pw_pub;        /* ISR -> tests: the pulse width this block */
     /* the CC map: the ISR writes a value, then bumps its counter; the main loop applies what changed (cc_take) */
-    volatile uint8_t cc_val[16];
-    volatile uint8_t cc_seq[16];
+    volatile uint8_t cc_val[NCC];
+    volatile uint8_t cc_seq[NCC];
+    volatile uint8_t pc_val, pc_seq;     /* Program Change, handed over the same way */
+    /* velocity and aftertouch (ISR state) */
+    uint8_t vel[128];                    /* each MIDI note's velocity while it is down (0: from the panel / derived) */
+    uint8_t last_vel;                    /* the latest note's (the panel: 100), for notes without their own */
+    uint8_t pat[128], pat_max, cat;      /* polyphonic aftertouch by note, its maximum, channel aftertouch */
+    int32_t at_s;                        /* the pressure, smoothed, x 256 */
+    int32_t vel_steps, vel_env_q7;       /* VELOCITY FILTER: cutoff steps and envelope scale of the latest note */
+    uint32_t prev_keys;                  /* (the panel keys last block: a new one plays at velocity 100) */
 } vox;
 
 /* the pitch modulation: 65536 x (2^(c / 1200) - 1) for c = -300 .. +300 cents (vibrato + mod wheel + bend), so a
@@ -245,10 +260,23 @@ static const int16_t CENT_DQ[601] = {
 #define PW_MIN 214748365u        /* the pulse width's limits under PWM: 5 % and 95 % of the period */
 #define PW_MAX 4080218931u
 
-/* the CC map (docs/SPEC.md "MIDI"): CC number -> the sound parameter it sets (0..127 across its range) */
-static const uint8_t CC_NUM[16] = {12, 13, 14, 15, 74, 71, 20, 21, 73, 75, 70, 72, 76, 77, 78, 93};
-static const uint8_t CC_PAR[16] = {P_R16, P_R8, P_R4, P_SHAPE, P_CUT, P_RES, P_FENV, P_KTRK,
-                                   P_ATK, P_DEC, P_SUS, P_REL, P_LRATE, P_VIB, P_PWM, P_ENSD};
+/* the CC map (docs/SPEC.md "MIDI"): every parameter, received and sent, 0..127 across its range. A target below 0x40
+ * is a sound parameter (P_*), 0x40 + i set.g[i], 0x50 + i set.g2[i], 0x60.. the panel's own states. The first 16 are
+ * the map of version 1 (their numbers stay); the rest use CC numbers MIDI leaves undefined. */
+enum { CT_G = 0x40, CT_G2 = 0x50, CT_TEMPO = 0x60, CT_ARP, CT_HOLD, CT_PLAY, CT_OCT };
+static const uint8_t CC_NUM[NCC] = {12, 13, 14, 15, 74, 71, 20, 21, 73, 75, 70, 72, 76, 77, 78, 93,
+                                    79, 22, 23, 24, 25, 26, 27, 28, 29,
+                                    30, 31, 7,
+                                    102, 103, 104, 105, 106, 107, 108, 109, 110,
+                                    111, 112, 113};
+static const uint8_t CC_TGT[NCC] = {P_R16, P_R8, P_R4, P_SHAPE, P_CUT, P_RES, P_FENV, P_KTRK,
+                                    P_ATK, P_DEC, P_SUS, P_REL, P_LRATE, P_VIB, P_PWM, P_ENSD,
+                                    P_LDLY, P_ENSR, P_FLGA, P_FLGR, P_DTIME, P_DFB, P_DMIX, P_DTONE, P_ENS,
+                                    CT_G + G_TRIG, CT_G + G_TUNE, CT_G + G_VOL,
+                                    CT_G + G_ARPM, CT_G + G_ARPR, CT_G + G_ARPO, CT_G + G_ARPG, CT_TEMPO, CT_ARP,
+                                    CT_HOLD, CT_PLAY, CT_OCT,
+                                    CT_G2 + G2_VEL, CT_G2 + G2_AT, CT_G2 + G2_ATD};
+static uint8_t cc_slot[128];     /* CC number -> its index in CC_NUM, 0xFF none (snd_init) */
 
 static const uint8_t *note_oct_tbl(void)        /* n / 12 without a divide in the ISR */
 {
@@ -273,6 +301,25 @@ static void bit_set(uint32_t *s, uint32_t n, int on)
         s[n >> 5] &= ~(1u << (n & 31u));
 }
 
+/* the latest note's velocity: its level (VELOCITY LEVEL) and what it does to the filter (VELOCITY FILTER: centred on
+ * the panel's 100, -25 .. +7 cutoff steps, the envelope amount scaled by velocity / 100); rare, so the divides here */
+static __attribute__((noinline)) void vel_note(uint32_t note, uint32_t v)
+{
+    if (note < 128u)
+        vox.vel[note] = (uint8_t)v;
+    vox.last_vel = (uint8_t)v;
+    vox.vel_steps = ((int32_t)v - 100) * 32 / 127;
+    vox.vel_env_q7 = (int32_t)v * 128 / 100;
+}
+
+static __attribute__((noinline)) void pat_scan(void)   /* the strongest polyphonic pressure */
+{
+    uint32_t n, m = 0;
+    for (n = 0; n < 128u; n++)
+        m = vox.pat[n] > m ? vox.pat[n] : m;
+    vox.pat_max = (uint8_t)m;
+}
+
 /* one MIDI message (rare: out of the hot loop) */
 static __attribute__((noinline)) void snd_midi(uint32_t pkt)
 {
@@ -281,6 +328,9 @@ static __attribute__((noinline)) void snd_midi(uint32_t pkt)
         bits_clear(vox.midi);
         bits_clear(vox.sus);
         vox.pedal = 0;
+        memset(vox.vel, 0, sizeof vox.vel);
+        memset(vox.pat, 0, sizeof vox.pat);
+        vox.pat_max = vox.cat = 0;
         return;
     }
     if (((pkt >> 8) & 0xFFu) >= 0xF8u) {          /* clock, start, continue, stop: any channel (seq.c) */
@@ -289,10 +339,26 @@ static __attribute__((noinline)) void snd_midi(uint32_t pkt)
     }
     if (st < 0x80u || st == 0xF0u || (snd.midi_ch && ch + 1u != snd.midi_ch))
         return;
-    if (st == 0x90u && d2)
+    if (st == 0x90u && d2) {
         bit_set(vox.midi, d1, 1);
-    else if (st == 0x80u || st == 0x90u)
+        vel_note(d1, d2);
+    } else if (st == 0x80u || st == 0x90u) {
         bit_set(vox.midi, d1, 0);
+        vox.vel[d1] = 0;
+        if (vox.pat[d1]) {                       /* its pressure goes with it */
+            vox.pat[d1] = 0;
+            pat_scan();
+        }
+    } else if (st == 0xA0u) {                    /* polyphonic aftertouch: the strongest held note's counts */
+        vox.pat[d1] = (uint8_t)d2;
+        pat_scan();
+    } else if (st == 0xD0u)                      /* channel aftertouch */
+        vox.cat = (uint8_t)d1;
+    else if (st == 0xC0u) {                      /* Program Change: the main loop loads the preset (cc_take) */
+        vox.pc_val = (uint8_t)d1;
+        RING_PUBLISH();
+        vox.pc_seq++;
+    }
     else if (st == 0xB0u && d1 == 64u) {         /* sustain pedal */
         vox.pedal = d2 >= 64u;
         if (!vox.pedal)
@@ -302,6 +368,9 @@ static __attribute__((noinline)) void snd_midi(uint32_t pkt)
         bits_clear(vox.sus);
         bits_clear(vox.latch);
         vox.pedal = 0;
+        memset(vox.vel, 0, sizeof vox.vel);
+        memset(vox.pat, 0, sizeof vox.pat);
+        vox.pat_max = 0;
     } else if (st == 0xE0u)                      /* pitch bend: 14 bits, centre 8192, +-2 semitones */
         vox.bend = ((int32_t)(d1 | d2 << 7) - 8192) * 200 >> 13;
     else if (st == 0xB0u && d1 == 1u)            /* the mod wheel: vibrato on top of VIBRATO */
@@ -310,16 +379,15 @@ static __attribute__((noinline)) void snd_midi(uint32_t pkt)
         vox.bend = 0;
         vox.modw = 0;
         vox.pedal = 0;
+        vox.cat = 0;
+        memset(vox.pat, 0, sizeof vox.pat);
+        vox.pat_max = 0;
         bits_clear(vox.sus);
-    } else if (st == 0xB0u) {                    /* the CC map: handed to the main loop (cc_take) */
-        uint32_t k;
-        for (k = 0; k < 16u; k++)
-            if (CC_NUM[k] == d1) {
-                vox.cc_val[k] = (uint8_t)d2;
-                RING_PUBLISH();                  /* (the value before the counter) */
-                vox.cc_seq[k]++;
-                break;
-            }
+    } else if (st == 0xB0u && cc_slot[d1] != 0xFFu) {   /* the CC map: handed to the main loop (cc_take) */
+        uint32_t k = cc_slot[d1];
+        vox.cc_val[k] = (uint8_t)d2;
+        RING_PUBLISH();                          /* (the value before the counter) */
+        vox.cc_seq[k]++;
     }
 }
 
@@ -377,7 +445,8 @@ static void lfo_block(uint32_t *incm, int32_t *rrm, uint32_t *pw)
     vox.lfo_amt = k > 65536 ? 65536 : k;
     tri = tri * (vox.lfo_amt >> 1) >> 15;                    /* (2^15 x 2^15: 32 bits, no 64-bit helper) */
     /* cents: VIBRATO 100 % = +-50, the mod wheel adds up to +-50 more, the bend +-200 */
-    c = (tri * (snd.vib_c + (vox.modw * 50 >> 7)) >> 15) + vox.bend;
+    c = (tri * (snd.vib_c + (vox.modw * 50 >> 7) + (snd.at_mode & 1u ? (vox.at_s >> 8) * snd.at_vib >> 7 : 0)) >> 15) +
+        vox.bend;
     c = c < -CENTS_MAX ? -CENTS_MAX : c > CENTS_MAX ? CENTS_MAX : c;
     vox.cents_pub = c;
     dq = CENT_DQ[c + CENTS_MAX];
@@ -429,6 +498,10 @@ static void app_audio(int32_t *out, uint32_t n)
         arp.idx = 0;
         vox.bend = 0;
         vox.modw = 0;
+        vox.cat = vox.pat_max = 0;
+        vox.at_s = 0;
+        memset(vox.vel, 0, sizeof vox.vel);
+        memset(vox.pat, 0, sizeof vox.pat);
         vox.env = 0;
         vox.stage = ENV_IDLE;
         memset(vox.gate, 0, sizeof vox.gate);
@@ -443,6 +516,15 @@ static void app_audio(int32_t *out, uint32_t n)
     for (i = 0; keys >> i; i++)
         if ((keys >> i) & 1u && kb + i < 128u)
             bit_set(kset, kb + i, 1);
+    if (keys & ~vox.prev_keys)                   /* a panel key went down: the panel plays at velocity 100 */
+        vel_note(128u, 100u);
+    vox.prev_keys = keys;
+    {   /* aftertouch: the stronger of channel and polyphonic pressure, smoothed (no zipper) */
+        int32_t at = (vox.cat > vox.pat_max ? vox.cat : vox.pat_max) << 8;
+        vox.at_s += (at - vox.at_s) >> 3;
+        if (at == 0 && vox.at_s < 256)
+            vox.at_s = 0;
+    }
     for (w = 0; w < 4u; w++) {
         mset[w] = vox.midi[w];
         vox.raw_pub[w] = kset[w] | mset[w];      /* (REC records these: before the chord) */
@@ -546,6 +628,12 @@ static void app_audio(int32_t *out, uint32_t n)
             rr = rrm[pc];
             gs = g0 << 5;                        /* Q15, interpolated across the block */
             dg = g1 - g0;
+            if (snd.vel_mode & 1u) {             /* VELOCITY LEVEL: the note's own (its velocity / 127) */
+                int32_t vq = vox.vel[note] ? vox.vel[note] : vox.last_vel;
+                vq += vq >> 7;                   /* 0 .. 128 */
+                gs = gs * vq >> 7;
+                dg = dg * vq >> 7;
+            }
             {   /* each register's step and BLEP reciprocal: octave k is the lowest octave's << k (and rr >> k) */
                 uint32_t d16 = inc << k16, d8 = inc << k, d4 = inc << k4;
                 int32_t r16 = rr >> k16, r8 = rr >> k, r4 = rr >> k4;
@@ -582,6 +670,12 @@ static void app_audio(int32_t *out, uint32_t n)
             flt.top = (w << 5) + 31u - (uint32_t)__builtin_clz(target[w]);
             break;
         }
+    {   /* what velocity and aftertouch do to the filter this block */
+        int32_t at = vox.at_s >> 8;
+        flt.vel_steps = snd.vel_mode & 2u ? vox.vel_steps : 0;
+        flt.env_q7 = snd.vel_mode & 2u ? vox.vel_env_q7 : 128;
+        flt.at_steps = snd.at_mode & 2u ? at * snd.at_cut >> 7 : 0;
+    }
     filt_block(vox.mix, n, e1);
 
     for (i = 0; i < n; i++) {                    /* the envelope (Q15), into the effects */
@@ -687,6 +781,10 @@ static void snd_update(void)
         seqp.chord_n = chord_rec ? 0u : set.chord_n[0];   /* (while REC records: the keys plain) */
         seqp.on = arp_on;
     }
+    snd.vel_mode = (uint32_t)set.g2[G2_VEL];
+    snd.at_mode = (uint32_t)set.g2[G2_AT];
+    snd.at_vib = set.g2[G2_ATD] * 50 / 100;
+    snd.at_cut = set.g2[G2_ATD] * 64 / 100;
     snd.f_cut = cur.p[P_CUT];
     snd.f_res = cur.p[P_RES];
     snd.f_env = cur.p[P_FENV];
@@ -716,6 +814,13 @@ static void snd_shed(void)
 
 static void snd_init(void)
 {
+    uint32_t k;
+    memset(cc_slot, 0xFF, sizeof cc_slot);
+    for (k = 0; k < NCC; k++)
+        cc_slot[CC_NUM[k]] = (uint8_t)k;
+    vox.last_vel = 100;
+    vox.vel_env_q7 = 128;
+    flt.env_q7 = 128;
     NOTE_OCT = note_oct_tbl();
     vox.cap = MAX_SOUNDING;
     snd_update();

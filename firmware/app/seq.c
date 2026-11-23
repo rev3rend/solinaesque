@@ -54,6 +54,25 @@ static struct {
 
 static void seq_bit(uint32_t *s, uint32_t n) { s[n >> 5] |= 1u << (n & 31u); }
 
+/* CCs and Program Changes the main loop sends (a knob turned, a preset changed): midi_out is for one context, and the
+ * notes go out from here, so the main loop queues its messages and the ISR sends them after its notes. One writer,
+ * one reader: the main loop moves w, the ISR r. */
+#define CCQ 32u
+static struct {
+    volatile uint32_t q[CCQ];    /* status | d1 << 8 | d2 << 16 */
+    volatile uint32_t w, r;
+} ccq;
+
+static int ccq_push(uint32_t st, uint32_t d1, uint32_t d2)   /* main loop: 0 queued, -1 full (try again later) */
+{
+    if (ccq.w - ccq.r >= CCQ)
+        return -1;
+    ccq.q[ccq.w % CCQ] = (st & 0xFFu) | (d1 & 0x7Fu) << 8 | (d2 & 0x7Fu) << 16;
+    RING_PUBLISH();
+    ccq.w++;
+    return 0;
+}
+
 /* a system real-time message (snd_midi): the clock, start, continue, stop */
 static __attribute__((noinline)) void seq_rt(uint32_t st)
 {
@@ -243,5 +262,12 @@ static void seq_out(const uint32_t *want)
             arp.out[w] |= 1u << b;
             sent++;
         }
+    }
+    while (ccq.r != ccq.w && sent < OUT_PER_BLOCK) {   /* then the main loop's CCs and Program Changes */
+        uint32_t m = ccq.q[ccq.r % CCQ];
+        RING_PUBLISH();
+        midi_out(m & 0xFFu, (m >> 8) & 0x7Fu, (m >> 16) & 0x7Fu);
+        ccq.r++;
+        sent++;
     }
 }

@@ -67,13 +67,17 @@ static const param_t *row_param(uint32_t page, uint32_t row, int8_t **val)
         *val = &cur.p[page * 4u + row];
         return &SP[page * 4u + row];
     }
+    if (page == PG_MIDI) {
+        *val = &set.g2[row];
+        return &GP2[row];
+    }
     *val = &set.g[(page == PG_GLO ? 0u : 4u) + row];
     return &GP[(page == PG_GLO ? 0u : 4u) + row];
 }
 
 static void page_open(uint32_t page)
 {
-    if ((ui.page == PG_GLO || ui.page == PG_ARP) && page != ui.page && ui.set_dirty) {
+    if ((ui.page == PG_GLO || ui.page == PG_ARP || ui.page == PG_MIDI) && page != ui.page && ui.set_dirty) {
         ui.set_dirty = 0;                        /* leaving the settings' pages: keep what changed */
         msg(data_save_settings() ? "SAVE FAILED" : "SETTINGS SAVED");
     }
@@ -82,6 +86,7 @@ static void page_open(uint32_t page)
 
 static void preset_load(uint32_t index)
 {
+    snd_epoch++;
     char b[8];
     cur_index = (uint8_t)index;
     cur = *preset_at(index);
@@ -230,7 +235,8 @@ static void draw_page_head(void)
     for (r = 0; r < 4u; r++)
         live |= row_param(ui.page, r, &v)->live;
     fmt_int(b, ui.page + 1);
-    cat(b, "/8", sizeof b);
+    cat(b, "/", sizeof b);
+    fmt_int(b + str_len(b), NPAGES);
     cv_text_r(230, 8, &AF_S, b, T_MID, T_BG);
     if (!live)
         cv_text_r(190, 8, &AF_S, "SOON", T_ACCENT, T_BG);
@@ -549,6 +555,7 @@ static void save_store(void)
     preset_label(l, sizeof l, NFACT + ui.save_slot);
     if (!ui.save_src) {                          /* the current sound: it now comes from that slot */
         cur = p;
+        snd_epoch++;
         cur_index = (uint8_t)(NFACT + ui.save_slot);
         set.last_preset = preset_code(cur_index);
         r |= data_save_settings();
@@ -684,7 +691,7 @@ static void ui_buttons(void)
             case B_SCL: page_open(PG_FLT); break;
             case B_ENV: page_open(PG_ENV); break;
             case B_LFO: page_open(PG_LFO); break;
-            case B_GLO: page_open(PG_GLO); break;
+            case B_GLO: page_open(ui.page == PG_GLO ? PG_MIDI : PG_GLO); break;   /* again: GLOBAL 2 (MIDI) */
             case B_FX:
                 page_open(ui.page == PG_FX1 ? PG_FX2 : PG_FX1);   /* FX 1 first; again: FX 2, and back */
                 break;
@@ -718,12 +725,14 @@ static void ui_buttons(void)
             else if (b == B_HOME) {              /* revert: the stored preset again */
                 if (cur_index < NPRESETS) {
                     cur = *preset_at(cur_index);
+                    snd_epoch++;
                     snd_update();
                     msg("REVERTED");
                 } else
                     msg("NEW SOUND: NOTHING TO REVERT");
             } else if (b == B_SAVE) {            /* INIT: a plain sound to start from */
                 cur = INIT_SOUND;
+                snd_epoch++;
                 cur_index = PRESET_NEW;
                 snd_update();
                 msg("INIT SOUND");
@@ -823,7 +832,7 @@ static void ui_master(void)                      /* the MASTER pot as the output
 
 static void ui_leds(void)
 {
-    static const uint8_t PAGE_BTN[NPAGES] = {B_EDIT, B_SCL, B_ENV, B_LFO, B_FX, B_FX, B_ARP, B_GLO};
+    static const uint8_t PAGE_BTN[NPAGES] = {B_EDIT, B_SCL, B_ENV, B_LFO, B_FX, B_FX, B_ARP, B_GLO, B_GLO};
     uint32_t b, k, blink = (fm1_ms / 250u) & 1u, kb = snd.key_base;
     for (b = 0; b < NB; b++) {
         int on = 0;
@@ -851,23 +860,118 @@ static void ui_init(void)
     ui.drawn_page = 0xFF;
 }
 
-/* the CC map: what the ISR received (sound.c snd_midi), applied to the sound here, where the parameters live */
+/* ------------------------------------------------------------ MIDI control: the CC map, Program Change --- */
+/* a mapped control's value now, 0..127 (what it would send) */
+static int32_t cc_get(uint32_t k)
+{
+    uint32_t t = CC_TGT[k];
+    const param_t *p = t < CT_G ? &SP[t] : t < CT_G2 ? &GP[t - CT_G] : t < CT_TEMPO ? &GP2[t - CT_G2] : 0;
+    int32_t v;
+    if (p) {
+        v = t < CT_G ? cur.p[t] : t < CT_G2 ? set.g[t - CT_G] : set.g2[t - CT_G2];
+        return ((v - p->lo) * 127 + (p->hi - p->lo) / 2) / (p->hi - p->lo);
+    }
+    switch (t) {
+    case CT_TEMPO: return ((int32_t)set.bpm - 40) * 127 / 200;
+    case CT_ARP: return ui.arp ? 127 : 0;
+    case CT_HOLD: return ui.hold ? 127 : 0;
+    case CT_PLAY: return ui.arp && !arp.halt_pub ? 127 : 0;
+    case CT_OCT: return (set.oct + 2) * 127 / 4;
+    }
+    return 0;
+}
+
+/* a mapped control set from MIDI (cc_take) */
+static void cc_set(uint32_t k, int32_t v)
+{
+    uint32_t t = CC_TGT[k];
+    const param_t *p = t < CT_G ? &SP[t] : t < CT_G2 ? &GP[t - CT_G] : t < CT_TEMPO ? &GP2[t - CT_G2] : 0;
+    if (p) {
+        int8_t x = clamp8(p->lo + (v * (p->hi - p->lo) + 63) / 127, p);
+        if (t < CT_G)
+            cur.p[t] = x;
+        else if (t < CT_G2) {
+            ui.set_dirty |= set.g[t - CT_G] != x;
+            set.g[t - CT_G] = x;
+        } else {
+            ui.set_dirty |= set.g2[t - CT_G2] != x;
+            set.g2[t - CT_G2] = x;
+        }
+        return;
+    }
+    switch (t) {
+    case CT_TEMPO: set.bpm = (uint8_t)(40 + v * 200 / 127); ui.set_dirty = 1; break;
+    case CT_ARP:
+        ui.arp = v >= 64;
+        arp_on = ui.arp;
+        break;
+    case CT_HOLD:
+        ui.hold = v >= 64;
+        vox.hold = ui.hold;
+        break;
+    case CT_PLAY:                                /* run (>= 64) or stop, as PLAY; nothing with the arp off */
+        if (ui.arp && (v >= 64) == arp.halt_pub)
+            arp.play_req = 1;
+        break;
+    case CT_OCT: set.oct = (int8_t)(v * 5 / 128 - 2); break;
+    }
+}
+
+static struct {
+    uint8_t seen[NCC], pc_seen;  /* the ISR's counters as taken */
+    int8_t out[NCC];             /* each control's value as last sent (or received: no echo), -1 not yet */
+    uint32_t epoch;
+    uint8_t index, ready;
+} ccs;
+
+/* what the ISR received, applied here, where the parameters live; no echo of it on MIDI out */
 static void cc_take(void)
 {
-    static uint8_t seen[16];
     uint32_t k, any = 0;
-    for (k = 0; k < 16u; k++) {
-        uint8_t q = vox.cc_seq[k];
-        if (q != seen[k]) {
-            const param_t *p = &SP[CC_PAR[k]];
-            int32_t v = vox.cc_val[k];
-            seen[k] = q;
-            cur.p[CC_PAR[k]] = clamp8(p->lo + (v * (p->hi - p->lo) + 63) / 127, p);
+    uint8_t q = vox.pc_seq;
+    for (k = 0; k < NCC; k++) {
+        uint8_t c = vox.cc_seq[k];
+        if (c != ccs.seen[k]) {
+            ccs.seen[k] = c;
+            cc_set(k, vox.cc_val[k]);
+            ccs.out[k] = (int8_t)cc_get(k);      /* (what MIDI set is not sent back) */
             any = 1;
+        }
+    }
+    if (q != ccs.pc_seen) {                      /* Program Change: 0..15 F1..F16, 16..47 U01..U32 */
+        ccs.pc_seen = q;
+        if (vox.pc_val < NPRESETS) {
+            preset_load(vox.pc_val);
+            ccs.index = cur_index;               /* (not sent back: nor its Program Change, nor its values) */
+            ccs.epoch = snd_epoch;
+            for (k = 0; k < NCC; k++)
+                ccs.out[k] = (int8_t)cc_get(k);
         }
     }
     if (any)
         snd_update();
+}
+
+/* what the panel changed, sent (CC OUT on): a knob's CC; a whole new sound: its Program Change only */
+static void cc_out(void)
+{
+    uint32_t k, ch = seqp.out_ch & 15u;
+    int send = set.g2[G2_CCOUT] != 0;
+    if (!ccs.ready || snd_epoch != ccs.epoch) {  /* boot, or a whole new sound: take it as it is */
+        if (ccs.ready && send && cur_index < NPRESETS && cur_index != ccs.index)
+            ccq_push(0xC0u | ch, cur_index, 0);
+        for (k = 0; k < NCC; k++)
+            ccs.out[k] = (int8_t)cc_get(k);
+        ccs.epoch = snd_epoch;
+        ccs.index = cur_index;
+        ccs.ready = 1;
+        return;
+    }
+    for (k = 0; k < NCC; k++) {
+        int32_t v = cc_get(k);
+        if (v != ccs.out[k] && (!send || !ccq_push(0xB0u | ch, CC_NUM[k], (uint32_t)v)))
+            ccs.out[k] = (int8_t)v;              /* (queue full: sent on a later frame) */
+    }
 }
 
 static void ui_frame(void)
@@ -885,4 +989,5 @@ static void ui_frame(void)
     ui_master();
     ui_leds();
     ui_draw();
+    cc_out();                                    /* (last: what the panel changed this frame goes out) */
 }
