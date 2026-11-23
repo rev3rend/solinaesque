@@ -194,7 +194,8 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
     (what changed, spoken); the platform's main loop calls the app's new `app_sysex()` hook before the update entry,
     which takes only frames starting 7D 53 52 and leaves the update protocol's to `ota_service`. Tested: the HELLO
     answer byte for byte, silence before HELLO and after BYE / 5 s, every page's readout within the rules,
-    debouncing, warnings, a full queue, and the update frames left alone.
+    debouncing, warnings, a full queue, and the update frames left alone. On the unit: the fm1-reader web page connects
+    and speaks it (2026-11-22); a full re-install through the new hook works.
 11. **Full MIDI control:** a CC for every parameter (sound, effects, LFO, arp, global), Program Change for presets,
     both received and sent (a knob turned sends its CC, a preset change its Program Change), and a SysEx dump of a
     preset (send and receive).
