@@ -24,7 +24,7 @@ enum { P_R16, P_R8, P_R4, P_SHAPE, P_CUT, P_RES, P_FENV, P_KTRK, P_ATK, P_DEC, P
 #define NSP_STORED 28            /* room in a stored preset for parameters added later */
 static const param_t SP[NSP] = {
     {"16'", K_PCT, 0, 100, 70, 1},     {"8'", K_PCT, 0, 100, 100, 1},    {"4'", K_PCT, 0, 100, 40, 1},
-    {"SHAPE", K_SHAPE, 0, 99, 0, 0},   {"CUTOFF", K_CUT, 0, 127, 127, 0}, {"RESONANCE", K_PCT, 0, 100, 0, 0},
+    {"SHAPE", K_SHAPE, 0, 99, 0, 1},   {"CUTOFF", K_CUT, 0, 127, 127, 0}, {"RESONANCE", K_PCT, 0, 100, 0, 0},
     {"ENV AMOUNT", K_BIP, -100, 100, 0, 0}, {"KEY TRACK", K_PCT, 0, 100, 0, 0},
     {"ATTACK", K_ATK, 0, 127, 70, 1},  {"DECAY", K_DEC, 0, 127, 64, 1},  {"SUSTAIN", K_PCT, 0, 100, 100, 1},
     {"RELEASE", K_REL, 0, 127, 70, 1},
@@ -77,7 +77,7 @@ static uint32_t pv_ms(uint8_t kind, int32_t x)
     return (uint32_t)x;
 }
 
-static const char *const SHAPE_NAME[4] = {"SAW", "SAW+SQR", "SQUARE", "PWM"};
+static const char *const SHAPE_NAME[3] = {"SAW", "SAW+SQR", "SQUARE"};
 static const char *const TRIG_NAME[2] = {"RETRIG", "LEGATO"};
 static const char *const ARPM_NAME[5] = {"UP", "DOWN", "UP-DOWN", "RANDOM", "PLAYED"};
 static const char *const ARPR_NAME[6] = {"1/4", "1/8", "1/8T", "1/16", "1/16T", "1/32"};
@@ -128,7 +128,15 @@ static void pv_text(char *b, unsigned max, const param_t *p, int32_t x)
             cat(b, " kHz", max);
         }
         return;
-    case K_SHAPE: str_cpy(b, SHAPE_NAME[x * 4 / 100], max); return;
+    case K_SHAPE:                                /* sound.c snd_update: 0 saw, 33 saw + square, 66 square, 99 pulse 10 % */
+        if (x > 66) {                            /* the pulse's width: 50 % at 66 .. 10 % at 99 */
+            fmt_int(t, 50 - (x - 66) * 40 / 33);
+            str_cpy(b, "PULSE ", max);
+            cat(b, t, max);
+            cat(b, "%", max);
+        } else
+            str_cpy(b, SHAPE_NAME[!x ? 0 : x < 50 ? 1 : 2], max);
+        return;
     case K_TRIG: str_cpy(b, TRIG_NAME[x & 1], max); return;
     case K_TUNE:
         fmt_int(t, x);

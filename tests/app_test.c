@@ -387,6 +387,44 @@ static int32_t peak(const int32_t *b, uint32_t frames)
     return m;
 }
 
+/* the level of a tone at f Hz (Goertzel, Hann window), dB relative to an arbitrary reference: compare two */
+static double tone_db(const int32_t *b, uint32_t frames, double f)
+{
+    double w = 2.0 * M_PI * f / FS, c = 2.0 * cos(w), s1 = 0, s2 = 0, s0, re, im;
+    uint32_t i;
+    for (i = 0; i < frames; i++) {
+        double win = 0.5 - 0.5 * cos(2.0 * M_PI * i / (frames - 1));
+        s0 = b[2u * i] * win + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    re = s1 - s2 * cos(w);
+    im = s2 * sin(w);
+    return 10.0 * log10(re * re + im * im + 1e-30);
+}
+
+static double flat_share(const int32_t *b, uint32_t frames)   /* samples within 15 % of the peak level */
+{
+    int32_t pk = peak(b, frames);
+    uint32_t i, n = 0;
+    for (i = 0; i < frames; i++)
+        n += abs(b[2u * i]) * 100 > pk * 85;
+    return (double)n / frames;
+}
+
+static double pos_share(const int32_t *b, uint32_t frames, double *dc)   /* share above zero; the mean / peak */
+{
+    int32_t pk = peak(b, frames);
+    uint32_t i, n = 0;
+    double sum = 0;
+    for (i = 0; i < frames; i++) {
+        n += b[2u * i] > 0;
+        sum += b[2u * i];
+    }
+    *dc = sum / frames / (pk ? pk : 1);
+    return (double)n / frames;
+}
+
 static int same_lr(const int32_t *b, uint32_t frames)
 {
     uint32_t i;
@@ -406,6 +444,7 @@ static void voice(int r16, int r8, int r4, int atk, int rel)
     cur.p[P_DEC] = 0;
     cur.p[P_SUS] = 100;
     cur.p[P_REL] = (int8_t)rel;
+    cur.p[P_SHAPE] = 0;
     set.g[G_TRIG] = 0;
     snd_update();
 }
@@ -593,6 +632,60 @@ static void sound(void)
     app_audio_stop();
     host_render(buf, 1024);
     check("app_audio_stop: silent at once, the MIDI note forgotten", peak(buf, 1024) == 0);
+
+    /* band-limited saws: a high note's folded harmonics far down (the naive ramp folds its 7th at -17 dB) */
+    {
+        double fund, alias7, alias9, f0 = 3951.07;          /* B7, 8' */
+        silence();
+        voice(0, 100, 0, 0, 0);
+        host_midi(0x90, 107, 100);
+        host_render(buf, ONE_S);
+        fund = tone_db(buf + 2u * 8192u, 32768, f0);
+        alias7 = tone_db(buf + 2u * 8192u, 32768, FS - 7.0 * f0);   /* 27 658 Hz folded to 16 442 Hz */
+        alias9 = tone_db(buf + 2u * 8192u, 32768, 9.0 * f0 - FS);   /* 35 560 Hz folded to 8 540 Hz */
+        printf("  (B7: 7th folded %.1f dB, 9th folded %.1f dB under the fundamental)\n", alias7 - fund, alias9 - fund);
+        /* measured: naive -16.9 / -19.1 dB, PolyBLEP -29.8 / -44.5 dB (a 2-sample BLEP is weakest near Nyquist) */
+        check("PolyBLEP: B7's 7th folded to 16.4 kHz > 25 dB down", alias7 - fund < -25.0);
+        check("PolyBLEP: B7's 9th folded to 8.5 kHz > 35 dB down", alias9 - fund < -35.0);
+        host_midi(0x80, 107, 0);
+        silence();
+    }
+    /* SHAPE: the saw ramps, the square sits at two levels, the pulse narrows; no DC; the pitch stays */
+    {
+        static const struct { int shape; const char *text; } T[] = {
+            {0, "SAW"}, {20, "SAW+SQR"}, {50, "SQUARE"}, {66, "SQUARE"}, {67, "PULSE 49%"}, {99, "PULSE 10%"}};
+        uint32_t k;
+        int good = 1;
+        double flat_saw, flat_sq, pos, dc;
+        char b[24];
+        for (k = 0; k < sizeof T / sizeof T[0]; k++) {
+            pv_text(b, sizeof b, &SP[P_SHAPE], T[k].shape);
+            good &= str_eq(b, T[k].text);
+        }
+        check("SHAPE values: SAW, SAW+SQR, SQUARE, PULSE 49% .. 10%", good);
+        voice(0, 100, 0, 0, 0);
+        fm1_in.notes = 1u << 7;                                     /* C4 */
+        host_render(buf, ONE_S);
+        flat_saw = flat_share(buf + 2u * 4096u, 32768);
+        cur.p[P_SHAPE] = 66;
+        snd_update();
+        host_render(buf, ONE_S);
+        flat_sq = flat_share(buf + 2u * 4096u, 32768);
+        printf("  (samples near the peaks: saw %.2f, square %.2f)\n", flat_saw, flat_sq);
+        check("SHAPE 66: a square (most samples at its two levels)", flat_sq > 0.85 && flat_saw < 0.3);
+        check("SHAPE 66: the pitch stays (C4 261.6 Hz)", fabs(pitch(buf, ONE_S) - 261.63) < 0.5);
+        cur.p[P_SHAPE] = 99;
+        snd_update();
+        host_render(buf, ONE_S);
+        pos = pos_share(buf + 2u * 4096u, 32768, &dc);
+        printf("  (pulse 10 %%: %.3f of the samples above zero, DC %.4f of the peak)\n", pos, dc);
+        check("SHAPE 99: a 10 % pulse", fabs(pos - 0.10) < 0.03 || fabs(pos - 0.90) < 0.03);
+        check("SHAPE 99: no DC (< 1 % of the peak)", fabs(dc) < 0.01);
+        fm1_in.notes = 0;
+        cur.p[P_SHAPE] = 0;
+        snd_update();
+        silence();
+    }
 
     /* the ceiling: held notes first, releasing ones dropped past it; the load shedding moves it */
     silence();

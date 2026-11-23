@@ -72,10 +72,14 @@ the panel of a 1970s string machine. Every screen is drawn lazily (a signature p
 
 - **Oscillators:** 12 top-octave phase accumulators (one per pitch class, with master tune) divided down by powers
   of two to every MIDI note 0..127: every note of the same pitch class is phase-locked, as in a divide-down organ.
-  Only notes that are gated or still in their key-gate release are computed. Band-limited (PolyBLEP or equivalent).
+  Only notes that are gated or still in their key-gate release are computed. Band-limited: PolyBLEP saws (a two-sample polynomial at each wrap, 32-bit integer). Measured on B7
+  (3951 Hz): the 9th harmonic's fold to 8.5 kHz is 44.5 dB under the fundamental (naive: 19.1), the 7th's to
+  16.4 kHz 29.8 dB (naive: 16.9). In the emulator, 27 keys × 3 registers render at ~1.55× the naive cost.
 - **Registers:** each sounding note mixes three octaves: 16' (one octave down), 8' (as played), 4' (one octave up),
   each 0..100 %. Pitches past the top of the range fold back by an octave.
-- **Shape (KNOB 4 on STRINGS):** saw → saw+square → square → PWM (continuous, with the LFO's PWM depth on top).
+- **Shape (KNOB 4 on STRINGS):** continuous, 0..99: saw (0) → saw + square (33) → square (66) → a pulse narrowing
+  from 50 % to 10 % (99), shown as SAW, SAW+SQR, SQUARE, PULSE nn%. The square and pulse are two band-limited saws
+  a width apart (no DC at any width); the LFO's PWM depth comes on top in milestone 4.
 - **Key gates:** each note has a short gate ramp of a few ms on and off so keys never click; the shared envelope
   does the shaping.
 - **Shared filter:** one resonant low-pass (state-variable, 12 dB/oct) on the summed notes: cutoff 20 Hz..16 kHz,
@@ -160,8 +164,9 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
    and user preset records with defaults, the divide-down bank with naive saws in all three registers through the
    shared ADSR (RETRIG / LEGATO), HOLD, MIDI notes on a channel, sustain pedal, all notes off, note-off rules and
    `app_audio_stop`; SHAPE, FILTER, LFO, FX, ARP, PLAY and REC say `SOON`.
-2. **Divide-down bank:** band-limited saws (PolyBLEP or equivalent), shape morph, the voice ceiling measured on the
-   unit (`audio_cpu_q8`) and the oldest releasing notes dropped first.
+2. **Divide-down bank (done but the measurement):** PolyBLEP saws, the SHAPE morph, load shedding with held notes
+   first and releasing notes dropped first, CPU % on HOME. Left: read the CPU % on the unit with big chords and set
+   MAX_SOUNDING from it.
 3. **Shared filter and envelope:** the state-variable filter, ADSR with RETRIG / LEGATO, key tracking, the limiter.
 4. **LFO and MIDI in completed:** vibrato, PWM, delay; pitch bend, mod wheel, sustain, the CC map.
 5. **Ensemble:** the three-phase chorus and its types on ALGORITHM.

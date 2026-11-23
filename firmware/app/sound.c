@@ -7,9 +7,10 @@
  * 8' (k), 4' (k + 1), folded back an octave past the ends of the range. A per-note key gate of ~3 ms keeps keys from
  * clicking; the shared envelope (ADSR, RETRIG or LEGATO) does the shaping, and the notes that were down when the last
  * key went up keep sounding through its release (paraphonic: one envelope for all).
- * Milestone 1 (docs/SPEC.md): naive saws, no filter, LFO or effects yet; the band-limited shapes, the shared filter,
- * the LFO and the effects come with their milestones. Main loop -> ISR: snd (derived numbers, 32-bit stores) and the
- * volatile requests; ISR -> main loop: the published gated set and the sounding count. */
+ * The registers are band-limited saws (PolyBLEP), blended by SHAPE towards a square and a narrowing pulse (two saws
+ * apart). No filter, LFO or effects yet: they come with their milestones (docs/SPEC.md). Main loop -> ISR: snd
+ * (derived numbers, 32-bit stores) and the volatile requests; ISR -> main loop: the published gated set and the
+ * sounding count. */
 
 #define NOTE_KEY0 53u            /* note key 0 is F3 (hal/fm1_input.h fm1_in.notes) */
 #define MAX_SOUNDING 32u         /* notes rendered per block at most: held ones first (lowest first), then releasing */
@@ -36,7 +37,47 @@ static struct {
     uint32_t legato;             /* trigger mode: 1 LEGATO, 0 RETRIG */
     uint32_t midi_ch;            /* 0: omni, 1..16 */
     uint32_t key_base;           /* the MIDI note of key 0 with the octave shift */
+    int32_t rr[12];              /* the BLEP's reciprocal of each pitch class's step: 2^30 / (inc >> 12) */
+    int32_t w1, w2;              /* SHAPE: osc = (w1 x saw(p) - w2 x saw(p + pw)) / 256 (w2 0: a plain saw) */
+    uint32_t pw;                 /* SHAPE: the second saw's offset, the pulse width (2^31: a square) */
 } snd;
+
+/* A band-limited saw (PolyBLEP): the naive ramp, -32768 at p = 0 rising to 32767, with its jump at the wrap smoothed
+ * by a two-sample polynomial, (1 - x)^2 with x the distance to the wrap in steps, added just after it and taken off
+ * just before it. That takes the energy that would fold back below Nyquist down by ~25..40 dB over the naive ramp.
+ * x = p / dt in Q15 without a divide: (p >> 12) x rr >> 15, rr = 2^30 / (dt >> 12) (snd_update; >> k per octave).
+ * Integer only, 32-bit; the correction runs for ~2 samples a period, the rest is a shift and an XOR. */
+/* the two samples around the wrap (out of line: the hot loop stays small, this runs ~2 samples a period) */
+static __attribute__((noinline)) int32_t blep_fix(int32_t s, uint32_t p, uint32_t dt, int32_t rr)
+{
+    int32_t x, d;
+    if (p < dt) {                                /* just after the wrap: s ~ -32768, lifted towards 0 */
+        x = (int32_t)(p >> 12) * rr >> 15;
+        d = 32768 - (x > 32768 ? 32768 : x);
+        return s + (d * d >> 15);
+    }
+    x = (int32_t)((0u - p) >> 12) * rr >> 15;    /* just before it: s ~ +32767, brought down towards 0 */
+    d = 32768 - (x > 32768 ? 32768 : x);
+    return s - (d * d >> 15);
+}
+
+static inline int32_t blsaw(uint32_t p, uint32_t dt, int32_t rr)
+{
+    int32_t s = (int32_t)(p ^ 0x80000000u) >> 16;
+    if (p + dt < dt << 1)                        /* within a step of the wrap, either side: one compare (rare) */
+        return blep_fix(s, p, dt, rr);
+    return s;
+}
+
+/* one register's oscillator: the saw, or SHAPE's blend towards the square / pulse, which is the saw minus the same
+ * saw pw later (two band-limited saws: a band-limited pulse, and no DC at any width) */
+static inline int32_t osc(uint32_t p, uint32_t dt, int32_t rr, int32_t w1, int32_t w2, uint32_t pw)
+{
+    int32_t s = blsaw(p, dt, rr);
+    if (!w2)
+        return s;
+    return (w1 * s - w2 * blsaw(p + pw, dt, rr)) >> 8;
+}
 
 enum { ENV_IDLE, ENV_ATK, ENV_DEC, ENV_REL };
 
@@ -154,6 +195,8 @@ static void app_audio(int32_t *out, uint32_t n)
     uint32_t keys = fm1_in.notes, pkt, i, w, any = 0, fresh = 0, input = 0, rendered = 0, cap, pass;
     uint32_t gated[4], target[4], active[4], kb = snd.key_base;
     int32_t e0, e1, de, a16 = snd.amp16, a8 = snd.amp8, a4 = snd.amp4, gain = snd.gain;
+    int32_t w1 = snd.w1, w2 = snd.w2;
+    uint32_t pw = snd.pw;
 
     if (vox.midi_off_req) {                      /* before the queue: the old channel's notes go, what came in on the
                                                   * new channel since stays */
@@ -230,8 +273,8 @@ static void app_audio(int32_t *out, uint32_t n)
         uint32_t w = pass & 3u, held = pass < 4u;
         uint32_t bits = held ? active[w] & target[w] : active[w] & ~target[w];
         while (bits) {
-            uint32_t b = (uint32_t)__builtin_ctz(bits), note = (w << 5) + b, k, k16, k4, ph, inc;
-            int32_t g0 = vox.gate[note], g1, gs, dg;
+            uint32_t b = (uint32_t)__builtin_ctz(bits), note = (w << 5) + b, k, k16, k4, ph, inc, pc;
+            int32_t g0 = vox.gate[note], g1, gs, dg, rr;
             bits &= bits - 1u;
             if (rendered >= cap) {
                 if (!held) {
@@ -250,16 +293,36 @@ static void app_audio(int32_t *out, uint32_t n)
             k = NOTE_OCT[note];
             k16 = k ? k - 1u : k;                /* folded back past the ends of the range */
             k4 = k < 10u ? k + 1u : k;
-            ph = vox.phase[note - k * 12u];
-            inc = snd.inc[note - k * 12u];
+            pc = note - k * 12u;
+            ph = vox.phase[pc];
+            inc = snd.inc[pc];
+            rr = snd.rr[pc];
             gs = g0 << 5;                        /* Q15, interpolated across the block */
             dg = g1 - g0;
-            for (i = 0; i < n; i++) {
-                int32_t v = ((int32_t)(ph << k16) >> 16) * a16 + ((int32_t)(ph << k) >> 16) * a8 +
-                            ((int32_t)(ph << k4) >> 16) * a4;
-                vox.mix[i] += (v >> 15) * gs >> 15;
-                gs += dg;
-                ph += inc;
+            {   /* each register's step and BLEP reciprocal: octave k is the lowest octave's << k (and rr >> k) */
+                uint32_t d16 = inc << k16, d8 = inc << k, d4 = inc << k4;
+                int32_t r16 = rr >> k16, r8 = rr >> k, r4 = rr >> k4;
+                if (!w2)                         /* SHAPE at SAW: the plain loop (a register at 0 % adds 0) */
+                    for (i = 0; i < n; i++) {
+                        int32_t v = blsaw(ph << k16, d16, r16) * a16 + blsaw(ph << k, d8, r8) * a8 +
+                                    blsaw(ph << k4, d4, r4) * a4;
+                        vox.mix[i] += (v >> 15) * gs >> 15;
+                        gs += dg;
+                        ph += inc;
+                    }
+                else
+                    for (i = 0; i < n; i++) {
+                        int32_t v = 0;
+                        if (a16)
+                            v += osc(ph << k16, d16, r16, w1, w2, pw) * a16;
+                        if (a8)
+                            v += osc(ph << k, d8, r8, w1, w2, pw) * a8;
+                        if (a4)
+                            v += osc(ph << k4, d4, r4, w1, w2, pw) * a4;
+                        vox.mix[i] += (v >> 15) * gs >> 15;
+                        gs += dg;
+                        ph += inc;
+                    }
             }
         }
     }
@@ -299,8 +362,27 @@ static void snd_update(void)
     uint32_t ms;
     for (i = 0; i < (c < 0 ? -c : c); i++)
         t = t * (c > 0 ? CENT_UP : CENT_DN) >> 30;
-    for (i = 0; i < 12; i++)
+    for (i = 0; i < 12; i++) {
         snd.inc[i] = (uint32_t)((uint64_t)INC0[i] * t >> 30);
+        snd.rr[i] = (int32_t)((1u << 30) / (snd.inc[i] >> 12));   /* inc >= ~750 000: >> 12 is >= 183, no 0 */
+    }
+    {   /* SHAPE 0..99: saw (0) -> saw + square (33) -> square (66) -> a pulse narrowing to 10 % (99), continuous;
+         * osc = A saw + B square, square = saw(p) - saw(p + pw): w1 = A + B, w2 = B */
+        int32_t x = cur.p[P_SHAPE], a, bq;
+        if (x < 33) {
+            bq = 128 * x / 33;
+            a = 256 - bq;
+        } else if (x < 66) {
+            a = 128 - 128 * (x - 33) / 33;
+            bq = 256 - a;
+        } else {
+            a = 0;
+            bq = 256;
+        }
+        snd.w1 = a + bq;                         /* (256 in every zone: the blend keeps its level) */
+        snd.w2 = bq;
+        snd.pw = x <= 66 ? 0x80000000u : 0x80000000u - (uint32_t)(x - 66) * 52060209u;   /* 0.4 x 2^32 / 33 a step */
+    }
     snd.amp16 = cur.p[P_R16] * REG_AMP / 100;
     snd.amp8 = cur.p[P_R8] * REG_AMP / 100;
     snd.amp4 = cur.p[P_R4] * REG_AMP / 100;
