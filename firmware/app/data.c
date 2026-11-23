@@ -201,16 +201,16 @@ static const preset_t FACTORY[NFACT] = {
     {"SWELL", {80, 100, 50, 0, 50, 30, 70, 20, 112, 100, 100, 100, 96, 12, 0, 50, 60, 52, 0, 20, 105, 40, 20, 50, 2}},
     /* F8 a pulse with slow PWM through the flanger and long echoes */
     {"SPACE", {60, 100, 60, 75, 110, 10, 0, 0, 88, 64, 100, 110, 35, 0, 40, 0, 70, 40, 45, 15, 120, 70, 45, 45, 4}},
-    /* F9 a brass section: the filter envelope bites and falls back, a little vibrato */
-    {"BRASS", {0, 100, 40, 0, 60, 20, 55, 40, 60, 85, 70, 70, 98, 8, 0, 12, 40, 52, 0, 20, 90, 30, 0, 60, 1}},
-    /* F10 squares in all registers, instant on and off, a fast ensemble for movement */
-    {"ORGAN", {80, 100, 70, 66, 115, 0, 0, 0, 10, 0, 100, 30, 104, 0, 0, 0, 80, 70, 0, 20, 90, 30, 0, 60, 2}},
-    /* F11 a square with slow PWM: hollow and moving */
-    {"HOLLOW", {50, 100, 0, 66, 95, 15, 0, 20, 90, 64, 100, 95, 45, 0, 70, 0, 50, 45, 0, 20, 100, 30, 15, 40, 1}},
-    /* F12 a narrow pulse, 4' leading, resonance tracking the keys, bright echoes */
-    {"GLASS", {0, 60, 100, 85, 100, 55, 0, 80, 70, 64, 100, 100, 60, 0, 30, 0, 50, 52, 0, 20, 90, 50, 30, 70, 2}},
-    /* F13 16' first, rounded, for the left hand */
-    {"BASSES", {100, 50, 0, 0, 75, 10, 0, 60, 80, 64, 100, 80, 98, 10, 0, 15, 45, 52, 0, 20, 90, 30, 0, 60, 1}},
+    /* F9 a brass section: the filter envelope bites and falls back, a little vibrato, ensemble II (by ear) */
+    {"BRASS", {0, 100, 40, 0, 60, 20, 55, 40, 60, 85, 70, 70, 98, 8, 0, 12, 40, 52, 0, 20, 90, 30, 0, 60, 2}},
+    /* F10 squares in all registers (16' 60, 8' and 4' 80: balanced by ear), instant on and off, a fast ensemble */
+    {"ORGAN", {60, 80, 80, 66, 115, 0, 0, 0, 10, 0, 100, 30, 104, 0, 0, 0, 50, 70, 0, 20, 90, 30, 0, 60, 2}},
+    /* F11 8' alone, a square with deep slow PWM fading in after 120 ms: hollow and moving (by ear) */
+    {"HOLLOW", {0, 100, 0, 66, 95, 15, 0, 20, 90, 64, 100, 95, 45, 0, 90, 3, 50, 45, 0, 20, 100, 30, 15, 40, 1}},
+    /* F12 a narrow pulse, 4' leading, a slow 585 ms attack, 717 Hz with strong resonance tracking the keys (by ear) */
+    {"GLASS", {0, 60, 100, 85, 68, 80, 10, 80, 95, 64, 100, 100, 60, 0, 30, 0, 50, 52, 0, 20, 90, 50, 30, 70, 2}},
+    /* F13 16' first, rounded, for the left hand: instant attack, a 21 ms decay to full sustain (by ear) */
+    {"BASSES", {100, 50, 0, 0, 75, 10, 0, 60, 0, 26, 100, 80, 98, 10, 0, 15, 45, 52, 0, 20, 90, 30, 0, 60, 1}},
     /* F14 no sustain: the filter envelope plucks, the echo carries it */
     {"PLUCK", {30, 100, 60, 0, 55, 30, 75, 40, 0, 75, 0, 75, 98, 0, 0, 0, 50, 52, 0, 20, 95, 35, 25, 50, 2}},
     /* F15 resonance at a vowel-like cutoff, the deep ensemble, late vibrato */

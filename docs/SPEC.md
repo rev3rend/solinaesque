@@ -141,7 +141,8 @@ In the platform store (36 records of 4 KB) under this app's id:
 | User presets 2 | U17..U32 |
 
 Factory sounds F1..F16 are built in (read-only): CLASSIC, CELLO, VIOLINS, FULL ENS, DARK PAD, BRIGHT, SWELL,
-SPACE, BRASS, ORGAN, HOLLOW, GLASS, BASSES, PLUCK, VOX, ECHOES (designed from the engine, to be tuned by ear).
+SPACE, BRASS, ORGAN, HOLLOW, GLASS, BASSES, PLUCK, VOX, ECHOES (designed from the engine; F9..F13 tuned by ear on
+the unit, 2026-11-22, the rest approved as they were).
 to the defaults. The settings record is written on every SAVE and when the GLOBAL or ARP page is left after a change
 (never on a knob turn: flash wear). Each record starts with a version and a payload size (append only).
 
@@ -167,7 +168,6 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
 ## Open questions
 
 - Whether the brass/organ "second section" of an ARP Omni style instrument is wanted later.
-- The factory sounds' exact values (tuned by ear on the unit).
 - More stored chords (8 slots in the settings) and how to pick one.
 - The MASTER pot's real range on the unit (the app reads 0..1023 as silent..full).
 
@@ -204,6 +204,8 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
    exact silence, a stop silences it at once. Measured: the echo within 0.1 ms of DLY TIME, FEEDBACK 50 % gives
    half the level on the second echo. All three in float on the FPU (fx.c, no soft float).
    On the unit: F8 SPACE (ensemble, flanger and delay all on) with a big chord peaks at 25 % CPU.
+   With the arp and chord memory (milestone 8 build) the unit peaks near 45 % (a big chord through chord memory
+   reaches the 48-note ceiling); shedding starts at 80 %.
 7. **Presets (done):** 16 factory sounds (8 redesigned, 8 new), naming on the SAVE screen, ALGORITHM there picks
    what to store (restore a factory sound into a slot, INIT clears one), the edited `*` and HOME held to revert,
    SAVE held for INIT. Tuning the factory sounds by ear on the unit stays open.
