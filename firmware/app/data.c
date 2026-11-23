@@ -30,11 +30,11 @@ static const param_t SP[NSP] = {
     {"RELEASE", K_REL, 0, 127, 70, 1},
     {"RATE", K_HZ, 0, 127, 64, 0},     {"VIBRATO", K_PCT, 0, 100, 0, 0}, {"PWM", K_PCT, 0, 100, 0, 0},
     {"DELAY", K_MS, 0, 125, 0, 0},
-    {"ENS DEPTH", K_PCT, 0, 100, 60, 0}, {"ENS RATE", K_HZ, 0, 127, 40, 0}, {"FLANGER", K_PCT, 0, 100, 0, 0},
-    {"FLG RATE", K_HZ, 0, 127, 20, 0},
-    {"DLY TIME", K_DLY, 0, 127, 90, 0}, {"FEEDBACK", K_PCT, 0, 95, 30, 0}, {"DLY MIX", K_PCT, 0, 100, 0, 0},
-    {"DLY TONE", K_PCT, 0, 100, 60, 0},
-    {"ENSEMBLE", K_PCT, 0, 4, 2, 0},
+    {"ENS DEPTH", K_PCT, 0, 100, 60, 1}, {"ENS RATE", K_HZ, 0, 127, 40, 1}, {"FLANGER", K_PCT, 0, 100, 0, 1},
+    {"FLG RATE", K_HZ, 0, 127, 20, 1},
+    {"DLY TIME", K_DLY, 0, 127, 90, 1}, {"FEEDBACK", K_PCT, 0, 95, 30, 1}, {"DLY MIX", K_PCT, 0, 100, 0, 1},
+    {"DLY TONE", K_PCT, 0, 100, 60, 1},
+    {"ENSEMBLE", K_PCT, 0, 4, 2, 1},
 };
 static const char *const ENS_NAME[5] = {"OFF", "I", "II", "III", "FLANGE"};
 

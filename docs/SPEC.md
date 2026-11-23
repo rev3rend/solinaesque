@@ -175,8 +175,15 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
    0.2 dB and takes 2.1 kHz down 15 dB, 4.2 kHz 26 dB; RESONANCE 90 % lifts the cutoff's harmonic 18.6 dB. In the
    emulator the filter costs about as much as 7..8 note-registers; on the unit, to be read on HOME.
 4. **LFO and MIDI in completed:** vibrato, PWM, delay; pitch bend, mod wheel, sustain, the CC map.
-5. **Ensemble:** the three-phase chorus and its types on ALGORITHM.
-6. **Flanger and delay:** both effects, the pool budget checked.
+5. **Ensemble (done):** three taps of one short line, each swept by a slow sine (ENS RATE) plus a fast one at 10×,
+   120° apart, taps 1 / 3 left / right and tap 2 in both; types I (slow, subtle), II (slow + fast), III (deep),
+   FLANGE (the flanger alone); ENS DEPTH scales the sweep (60 %: the type's own; 0 %: still taps, L = R). Equal-power
+   dry / wet: the level stays (measured 0.97× dry). Measured L/R correlation: I 0.56, II 0.25, III 0.48.
+6. **Flanger and delay (done):** flanger 0.3..3.8 ms swept by a triangle, L / R in opposite phase, FLANGER sets
+   feedback and mix (FLANGE type: at least 60 %). Delay: stereo, up to 1.02 s (int16 lines, 176 KB of pool), time
+   changes glide like tape, FEEDBACK with DLY TONE's low-pass in the loop, DLY MIX added to the dry; tails end in
+   exact silence, a stop silences it at once. Measured: the echo within 0.1 ms of DLY TIME, FEEDBACK 50 % gives
+   half the level on the second echo. All three in float on the FPU (fx.c, no soft float).
 7. **Presets:** the factory sounds tuned, SAVE to user slots, PRESETS browsing.
 8. **Hold, arpeggiator, chord memory:** latch, the arp with internal tempo and MIDI clock, MIDI note out, chords.
 9. **Polish:** ENVELOPE and FILTER drawings, the CC map in the docs, budgets checked, first install on a unit.

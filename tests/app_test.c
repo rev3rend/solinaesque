@@ -42,6 +42,11 @@ static void power_cycle(void)                           /* the app's RAM gone, t
     memset(&cur, 0, sizeof cur);
     memset(&set, 0, sizeof set);
     memset(user, 0, sizeof user);
+    memset(ens_buf, 0, sizeof ens_buf);                 /* the pool is zeroed at power-on (main.c) */
+    memset(flg_buf, 0, sizeof flg_buf);
+    memset(dly_buf, 0, sizeof dly_buf);
+    memset(&fxs, 0, sizeof fxs);
+    memset(&flt, 0, sizeof flt);
     cur_index = 0;
     fm1_in.notes = fm1_in.buttons = 0;
     host_boot();
@@ -425,6 +430,27 @@ static double pos_share(const int32_t *b, uint32_t frames, double *dc)   /* shar
     return (double)n / frames;
 }
 
+static double rms_l(const int32_t *b, uint32_t frames)
+{
+    double sum = 0;
+    uint32_t i;
+    for (i = 0; i < frames; i++)
+        sum += (double)b[2u * i] * b[2u * i];
+    return sqrt(sum / frames);
+}
+
+static double corr_lr(const int32_t *b, uint32_t frames)   /* the correlation of left and right, -1 .. 1 */
+{
+    double sl = 0, sr = 0, slr = 0;
+    uint32_t i;
+    for (i = 0; i < frames; i++) {
+        sl += (double)b[2u * i] * b[2u * i];
+        sr += (double)b[2u * i + 1u] * b[2u * i + 1u];
+        slr += (double)b[2u * i] * b[2u * i + 1u];
+    }
+    return slr / sqrt(sl * sr + 1e-30);
+}
+
 static int same_lr(const int32_t *b, uint32_t frames)
 {
     uint32_t i;
@@ -449,6 +475,9 @@ static void voice(int r16, int r8, int r4, int atk, int rel)
     cur.p[P_RES] = 0;
     cur.p[P_FENV] = 0;
     cur.p[P_KTRK] = 0;
+    cur.p[P_ENS] = 0;                                   /* the effects off: the oscillators alone */
+    cur.p[P_FLGA] = 0;
+    cur.p[P_DMIX] = 0;
     set.g[G_TRIG] = 0;
     snd_update();
 }
@@ -767,6 +796,134 @@ static void sound(void)
         host_render(buf, ONE_S);
         check("RESONANCE 100 %: the release ends in exact silence, the filter at rest",
               peak(buf + 2u * (ONE_S - 1024u), 1024) == 0 && flt.ic1 == 0.0f && flt.ic2 == 0.0f);
+        voice(0, 100, 0, 0, 0);
+        silence();
+    }
+
+    /* the effects: ensemble (stereo, pitch kept, depth 0 still), flanger (bounded, its tail ends), delay (on time, feedback,
+     * exact silence, a stop) */
+    {
+        double c1, c2, c3, rms_off, rms_ens;
+        uint32_t k, same = 1;
+        silence();
+        voice(0, 100, 50, 0, 0);
+        fm1_in.notes = 1u << 7;                                     /* C4 */
+        host_render(buf, ONE_S);
+        rms_off = rms_l(buf + 2u * 8192u, 32768);
+        cur.p[P_ENS] = 2;                                           /* II, ENS DEPTH 60 % */
+        cur.p[P_ENSD] = 60;
+        snd_update();
+        host_render(buf, ONE_S);
+        rms_ens = rms_l(buf + 2u * 8192u, 32768);
+        c2 = corr_lr(buf + 2u * 8192u, 32768);
+        printf("  (ensemble II: L/R correlation %.3f, level %.2f x off)\n", c2, rms_ens / rms_off);
+        check("ensemble II: stereo (L and R differ, correlation < 0.95)", c2 < 0.95 && c2 > 0.0);
+        check("ensemble II: the level kept (0.7 .. 1.3 x off)", rms_ens / rms_off > 0.7 && rms_ens / rms_off < 1.3);
+        {   /* (zero crossings do not count a chorus's pitch: the fundamental stands well over 3 % either side) */
+            double at = tone_db(buf + 2u * 8192u, 32768, 261.63), lo = tone_db(buf + 2u * 8192u, 32768, 261.63 * 0.97),
+                   hi = tone_db(buf + 2u * 8192u, 32768, 261.63 * 1.03);
+            check("ensemble II: the pitch kept (C4 > 20 dB over +-3 %)", at - lo > 20.0 && at - hi > 20.0);
+        }
+        cur.p[P_ENSD] = 0;                                          /* no sweep: three still taps, mono */
+        snd_update();
+        host_render(buf, 4096);
+        host_render(buf, 4096);
+        for (k = 0; k < 4096u; k++)
+            same &= buf[2u * k] == buf[2u * k + 1u];
+        check("ensemble at ENS DEPTH 0: no movement, left = right", same && peak(buf, 4096) > 1000);
+        cur.p[P_ENSD] = 60;
+        cur.p[P_ENS] = 1;
+        snd_update();
+        host_render(buf, ONE_S);
+        c1 = corr_lr(buf + 2u * 8192u, 32768);
+        cur.p[P_ENS] = 3;
+        snd_update();
+        host_render(buf, ONE_S);
+        c3 = corr_lr(buf + 2u * 8192u, 32768);
+        printf("  (L/R correlation: I %.3f, II %.3f, III %.3f)\n", c1, c2, c3);
+        check("ensemble III deeper than I (less correlated)", c3 < c1);
+        fm1_in.notes = 0;
+        host_render(buf, ONE_S);
+        check("ensemble: the tail ends in exact silence", peak(buf + 2u * (ONE_S - 2048u), 2048) == 0);
+
+        cur.p[P_ENS] = 4;                                           /* FLANGE: the flanger alone, >= 60 % */
+        cur.p[P_FLGA] = 0;
+        snd_update();
+        fm1_in.notes = 1u << 7;
+        host_render(buf, ONE_S);
+        check("FLANGE: the flanger runs (stereo, opposite sweeps)", corr_lr(buf + 2u * 8192u, 32768) < 0.99);
+        cur.p[P_FLGA] = 100;
+        cur.p[P_RES] = 90;
+        snd_update();
+        voice(100, 100, 100, 0, 0);
+        cur.p[P_ENS] = 4;
+        cur.p[P_FLGA] = 100;
+        snd_update();
+        fm1_in.notes = (1u << 27) - 1u;
+        host_render(buf, ONE_S);
+        check("FLANGER 100 %, all keys: bounded", peak(buf, ONE_S) <= 32767 && peak(buf, ONE_S) > 1000);
+        fm1_in.notes = 0;
+        host_render(buf, ONE_S);
+        check("FLANGER 100 %: the tail ends in exact silence", peak(buf + 2u * (ONE_S - 2048u), 2048) == 0);
+        silence();
+        host_render(buf, ONE_S);                                    /* (the delay's quiet pass after the stop) */
+        host_render(buf, 2048);
+    }
+    {   /* the delay: a short burst, then its echoes */
+        static int32_t big[2u * 3u * FS];
+        uint32_t d = pv_ms(K_DLY, 64) * (FS / 100u) / 10u, k, first = 0, burst_end;
+        int32_t p1, p2;
+        voice(0, 100, 0, 0, 0);
+        cur.p[P_DMIX] = 100;
+        cur.p[P_DFB] = 0;
+        cur.p[P_DTIME] = 64;                                        /* ~102 ms */
+        cur.p[P_DTONE] = 100;                                       /* (open: the echoes keep their level) */
+        snd_update();
+        fm1_in.notes = 1u << 7;
+        host_render(big, 1024);
+        fm1_in.notes = 0;
+        host_render(big + 2u * 1024u, 3u * FS / CTL * CTL - 1024u);
+        for (burst_end = 1024; burst_end < d && big[2u * burst_end] != 0; burst_end++)
+            ;
+        for (k = burst_end; k < 3u * FS / CTL * CTL && !first; k++)
+            if (big[2u * k] != 0)
+                first = k;
+        printf("  (delay %u samples: the burst ended at %u, the first echo at %u)\n", d, burst_end, first);
+        check("delay: the echo arrives DLY TIME after the note (+-1 ms)", first > d - 45u && first < d + 45u);
+        check("delay FEEDBACK 0: one echo, then silence", peak(big + 2u * (2u * d + 2048u), 4096) == 0);
+        silence();
+        host_render(buf, ONE_S);
+        host_render(buf, 2048);
+        cur.p[P_DFB] = 50;
+        snd_update();
+        fm1_in.notes = 1u << 7;
+        host_render(big, 1024);
+        fm1_in.notes = 0;
+        host_render(big + 2u * 1024u, 3u * FS / CTL * CTL - 1024u);
+        p1 = peak(big + 2u * d, 1024);
+        p2 = peak(big + 2u * 2u * d, 1024);
+        printf("  (FEEDBACK 50 %%: first echo %d, second %d)\n", p1, p2);
+        check("delay FEEDBACK 50 %: a second echo at half the level (+-20 %)", p2 > p1 * 4 / 10 && p2 < p1 * 6 / 10);
+        check("delay FEEDBACK 50 %: the tail ends in exact silence within 3 s",
+              peak(big + 2u * (3u * FS / CTL * CTL - 4096u), 4096) == 0);
+        cur.p[P_DFB] = 90;
+        snd_update();
+        fm1_in.notes = 1u << 7;
+        host_render(buf, 2048);
+        fm1_in.notes = 0;
+        host_render(buf, 8192);
+        app_audio_stop();
+        host_render(buf, 4096);
+        check("app_audio_stop: the delay's tail silent at once", peak(buf, 4096) == 0);
+        silence();
+        cur.p[P_DMIX] = 0;
+        snd_update();
+        fm1_in.notes = 1u << 7;
+        host_render(buf, ONE_S);
+        host_render(buf, 1024);
+        fm1_in.notes = 0;
+        host_render(buf, ONE_S);
+        check("DLY MIX 0: no echo", peak(buf + 2u * 4096u, ONE_S - 4096u) == 0);
         voice(0, 100, 0, 0, 0);
         silence();
     }

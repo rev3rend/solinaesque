@@ -421,6 +421,7 @@ static void ui_encoders(void)
         int32_t e = cur.p[P_ENS] + s;
         cur.p[P_ENS] = (int8_t)(e < 0 ? 0 : e > 4 ? 4 : e);
         msg2("ENSEMBLE ", ENS_NAME[cur.p[P_ENS]]);
+        snd_update();                            /* (the engine reads it through fxp) */
     }
     s = panel_enc(EN_PRESET);
     if (s) {

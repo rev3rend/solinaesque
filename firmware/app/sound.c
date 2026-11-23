@@ -9,7 +9,8 @@
  * key went up keep sounding through its release (paraphonic: one envelope for all).
  * The registers are band-limited saws (PolyBLEP), blended by SHAPE towards a square and a narrowing pulse (two saws
  * apart); the sum goes through one resonant low-pass (filt_block: cutoff, resonance, envelope amount, key tracking)
- * and then the envelope. No LFO or effects yet: they come with their milestones (docs/SPEC.md). Main loop -> ISR: snd
+ * and then the envelope, then the effects (fx.c: ensemble, flanger, delay; stereo) and VOLUME x MASTER. No LFO yet
+ * (milestone 4, docs/SPEC.md). Main loop -> ISR: snd
  * (derived numbers, 32-bit stores) and the volatile requests; ISR -> main loop: the published gated set and the
  * sounding count. */
 
@@ -170,6 +171,7 @@ static struct {
     int32_t env;                 /* the shared envelope, Q24 */
     uint8_t stage, pedal;
     int32_t mix[CTL];
+    int32_t fxl[CTL], fxr[CTL];   /* the effects' stereo out */
     volatile uint8_t hold;       /* main loop -> ISR: HOLD on; off releases the latched notes */
     volatile uint8_t stop_req;   /* main loop -> ISR: forget every note, silence (app_audio_stop) */
     volatile uint8_t midi_off_req;   /* main loop -> ISR: release every MIDI note (the channel changed) */
@@ -295,6 +297,7 @@ static void app_audio(int32_t *out, uint32_t n)
         vox.stage = ENV_IDLE;
         memset(vox.gate, 0, sizeof vox.gate);
         flt.ic1 = flt.ic2 = 0.0f;
+        fx_reset();
     }
 
     /* what is down now: the keys at the octave shift, MIDI; then HOLD and the pedal keep what was down */
@@ -414,18 +417,21 @@ static void app_audio(int32_t *out, uint32_t n)
         }
     filt_block(vox.mix, n, e1);
 
-    for (i = 0; i < n; i++) {
-        int32_t x = vox.mix[i], ax;
+    for (i = 0; i < n; i++) {                    /* the envelope (Q15), into the effects */
+        int32_t x = vox.mix[i];
         x = x > 65535 ? 65535 : x < -65535 ? -65535 : x;
-        x = x * ((e0 + de * (int32_t)i) >> 9) >> 15;          /* the envelope, Q15 */
-        x = x * gain >> 8;
+        vox.mix[i] = x * ((e0 + de * (int32_t)i) >> 9) >> 15;
+    }
+    fx_block(vox.mix, vox.fxl, vox.fxr, n);      /* ensemble, flanger, delay: stereo */
+    for (i = 0; i < 2u * n; i++) {
+        int32_t x = (i & 1u ? vox.fxr : vox.fxl)[i >> 1], ax;
+        x = x > 1000000 ? 1000000 : x < -1000000 ? -1000000 : x;
+        x = x * gain >> 8;                       /* VOLUME x MASTER after the effects: their tails follow it */
         ax = x < 0 ? -x : x;
         if (ax > 20000)                          /* a soft knee, then the ceiling: full chords do not crack */
             ax = 20000 + ((ax - 20000) >> 2);
         ax = ax > 32767 ? 32767 : ax;
-        x = x < 0 ? -ax : ax;
-        out[2u * i] = x;
-        out[2u * i + 1u] = x;
+        out[i] = x < 0 ? -ax : ax;
     }
 }
 
@@ -482,6 +488,16 @@ static void snd_update(void)
     snd.rel_coef = snd.rel_coef > 32767 ? 32767 : snd.rel_coef < 1 ? 1 : snd.rel_coef;
     snd.sus = (ENV_ONE >> 2) * cur.p[P_SUS] / 25;   /* exact at 25, 50, 100 %; 2^22 x 100 fits 31 bits */
     snd.gain = set.g[G_VOL] * master_q8 / 100;
+    /* the effects (fx.c): integers only; a rate in mHz is a phase step per block of mHz x 2^32 x CTL / 1000 / FS */
+    fxp.ens_type = cur.p[P_ENS];
+    fxp.ens_depth = cur.p[P_ENSD];
+    fxp.ens_inc = pv_ms(K_HZ, cur.p[P_ENSR]) * 3117u;
+    fxp.flg_amt = cur.p[P_FLGA];
+    fxp.flg_inc = pv_ms(K_HZ, cur.p[P_FLGR]) * 3117u;
+    fxp.dly_len = (int32_t)(pv_ms(K_DLY, cur.p[P_DTIME]) * (FS / 100u) / 10u);   /* ms x 44.1 */
+    fxp.dly_fb = cur.p[P_DFB];
+    fxp.dly_mix = cur.p[P_DMIX];
+    fxp.dly_tone = cur.p[P_DTONE];
     snd.f_cut = cur.p[P_CUT];
     snd.f_res = cur.p[P_RES];
     snd.f_env = cur.p[P_FENV];

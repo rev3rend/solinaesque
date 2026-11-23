@@ -4,6 +4,7 @@
 /* Solinaesque: a paraphonic divide-down string machine (docs/SPEC.md). The app contract's five hooks (app.h) and
  * the parts, in dependency order:
  *   data.c    the parameters, the sound being played, the settings, the factory and user presets, their records
+ *   fx.c      the effects (audio ISR, on the FPU): ensemble, flanger, delay
  *   sound.c   the audio ISR: the divide-down oscillator bank, the registers, the key gates, the shared envelope
  *   ui.c      the panel: controls, LEDs, the HOME, page and SAVE screens */
 #ifndef APP_NAME
@@ -16,6 +17,7 @@
                                   * drew it), so another firmware's data in the same flash reads as empty */
 
 #include "data.c"
+#include "fx.c"
 #include "sound.c"
 #include "ui.c"
 
