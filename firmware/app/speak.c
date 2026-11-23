@@ -35,7 +35,11 @@ static const char *const SPK_TOK[][2] = {
     {"ct", "cents"},               {"K1", "knob 1"},
     {"K2", "knob 2"},              {"K3", "knob 3"},
     {"K4", "knob 4"},              {"*", "edited"},
-    {"FLANGE", "flanger"},         {"AT", "aftertouch"},
+    {"FLANGE", "flanger"},         {"PING-PONG", "ping pong"},
+    {"SYNC", "sync"},              {"1/2", "half notes"},
+    {"1/4.", "dotted quarter notes"}, {"1/4T", "quarter note triplets"},
+    {"1/8.", "dotted eighth notes"}, {"1/16.", "dotted sixteenth notes"},
+    {"PLAY", "play"},         {"AT", "aftertouch"},
     {"CC", "C C"},         {"OMNI", "omni"},
 };
 #define NSPK (sizeof SPK_TOK / sizeof SPK_TOK[0])
@@ -138,7 +142,8 @@ static void spk_param(char *d, unsigned max, const param_t *p, int32_t v)   /* "
 static void spk_page(char *d, unsigned max)       /* "envelope page. attack ..., decay ..., sustain ..., release ..." */
 {
     static const char *const NAME[NPAGES] = {"strings", "filter", "envelope", "L F O", "effects 1, ensemble and flanger",
-                                             "effects 2, delay", "arpeggiator", "global",
+                                             "effects 2, delay", "effects 3, delay mode and sync",
+                                             "arpeggiator", "global",
                                              "global 2, MIDI"};
     uint32_t r;
     int8_t *v;
@@ -146,6 +151,8 @@ static void spk_page(char *d, unsigned max)       /* "envelope page. attack ...,
     cat(d, " page.", max);
     for (r = 0; r < 4u; r++) {
         const param_t *p = row_param(ui.page, r, &v);
+        if (!p)
+            continue;
         if (r)
             cat(d, ",", max);
         spk_param(d, max, p, *v);
@@ -159,8 +166,10 @@ static void spk_page(char *d, unsigned max)       /* "envelope page. attack ...,
             cat(d, t, max);
             cat(d, " beats per minute.", max);
         }
-        if (arp.halt_pub)
-            cat(d, " stopped.", max);
+        if (arp.ext_pub ? arp.halt_pub : !arp.run_pub)
+            cat(d, arp.ext_pub ? " stopped." : " transport stopped.", max);
+        else if (!arp.ext_pub)
+            cat(d, " playing, sending MIDI clock.", max);
     }
 }
 
@@ -195,10 +204,12 @@ static void spk_home(char *d, unsigned max)
     spk(d, max, set.oct > 0 ? (t[0] = '+', t) : t);   /* (fmt_int writes no sign for positives) */
     cat(d, ", ", max);
     spk(d, max, TRIG_NAME[set.g[G_TRIG]]);
+    if (arp.run_pub && !arp.ext_pub)
+        cat(d, ", playing", max);
     if (ui.hold)
         cat(d, ", hold", max);
     if (ui.arp)
-        cat(d, arp.halt_pub ? ", arpeggiator stopped" : ", arpeggiator", max);
+        cat(d, arp.ext_pub && arp.halt_pub ? ", arpeggiator stopped" : ", arpeggiator", max);
     if (ui.recording)
         cat(d, ", recording a chord", max);
     else if (chord_on())
@@ -373,7 +384,7 @@ static void speak_frame(void)
                 sr_later(d, SR_NOW, 200u, now);
             } else
                 for (r = 0; r < 4u; r++)
-                    if (v[r] != sk.v[r]) {           /* a knob: its name and value when it settles */
+                    if (v[r] != sk.v[r] && (ui.page == PG_HOME || row_used(ui.page, r))) {
                         int8_t *pv;
                         const param_t *p = ui.page == PG_HOME
                                                ? &SP[r == 3u ? P_CUT : r == 0u ? P_R16 : r == 1u ? P_R8 : P_R4]

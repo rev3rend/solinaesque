@@ -28,14 +28,14 @@ printed buttons; KNOB 1..4 always edit the four parameters of the page on screen
 | SCL | press | FILTER page: cutoff, resonance, envelope amount, key tracking |
 | ENV | press | ENVELOPE page: attack, decay, sustain, release |
 | LFO | press | LFO page: rate, vibrato depth, PWM depth, delay (fade-in) |
-| FX | press; press again | FX 1 page (ensemble depth, ensemble rate, flanger amount, flanger rate); pressed on FX 1: FX 2 page (delay time, delay feedback, delay mix, delay tone); pressed on FX 2: back to FX 1 |
+| FX | press; again; again | FX 1 (ensemble depth, ensemble rate, flanger amount, flanger rate); FX 2 (delay time, feedback, mix, tone); FX 3 (DLY MODE stereo / ping-pong, DLY SYNC free or 1/2 .. 1/16 with dotted and triplet values; two rows kept for the reverb); then FX 1 again |
 | GLO | press; press again | GLOBAL page: trigger mode (retrig / legato), master tune, MIDI channel, volume; again: GLOBAL 2: VELOCITY, AFTERTOUCH, AT DEPTH, CC OUT |
 | ARP | tap | Arpeggiator on / off |
 | ARP | hold (≥ 0.5 s) | ARP page: mode (up, down, up-down, random, as played), rate (divisions of the tempo), octaves 1..4, gate |
 | SEQ | press | Hold (latch) on / off: released keys keep sounding until hold is turned off or a new chord is played |
 | REC | tap, hold keys, tap | Chord memory: the notes held while it records become the chord (semitones above the lowest, up to 8 within 4 octaves; the keys play plain while recording); then each key or MIDI note plays the chord on it. Needs 2+ notes. Kept with the settings over power-off |
 | REC | hold (≥ 0.5 s) | Clear the chord |
-| PLAY | press | The arp's transport: stop / run (a run starts the pattern at once); with the arp off it does nothing. MIDI start / continue / stop do the same |
+| PLAY | press | The transport: run / stop, the arp on or off. Running sends MIDI Start and MIDI clock (24 a quarter of the internal tempo) on USB and locks the arp's steps to it (its pattern from the top on the first tick); stopping sends MIDI Stop (the arp free-runs on the tempo). While the FM-1 follows MIDI clock, nothing is sent and PLAY stops / continues the arp |
 | SAVE | tap | The SAVE screen (below); the keys keep playing |
 | SAVE | hold (≥ 0.5 s) | INIT: a plain sound (8' saw, filter open, no LFO or effects), shown as NEW |
 | SAVE screen | PRESETS / ALGORITHM / KNOB 1..4 / SAVE | PRESETS: the user slot (U01..U32; from the current user slot, or U01). ALGORITHM: what to store (the current sound, F1..F16, INIT = clear the slot). KNOB 1: the name's cursor, KNOB 2: its letter (space A..Z 0..9 - .), KNOB 3: a word (STRINGS, PAD, CELLO ...), KNOB 4: clear. SAVE stores (the current sound then comes from that slot; a factory sound or INIT goes into the slot and the sound playing stays); any other button cancels |
@@ -167,6 +167,8 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
   | 93 | ENS DEPTH | 30 | TRIGGER | 31 | TUNE | 110 | OCTAVE shift (-2..+2) |
   | 7 | VOLUME | 111 | VELOCITY mode | 112 | AFTERTOUCH mode | 113 | AT DEPTH |
 
+  Also: CC 114 DLY MODE, CC 115 DLY SYNC.
+
   CC1 mod wheel, CC64 sustain, CC120 / 123 all off, CC121 reset are handled in the audio ISR; a mapped CC is handed
   to the main loop (a counter per control), which owns the parameters. Sending goes the other way through a queue
   to the ISR, which sends it after its notes (one context for MIDI out). A whole new sound (a preset, a revert, INIT,
@@ -233,11 +235,18 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
 12. **Velocity and aftertouch (done)** (MIDI only; the keys have none), switchable: velocity to nothing (organ), note level,
     filter envelope, or both; aftertouch (channel and polyphonic) to vibrato, cutoff, or both. Settings on a second
     GLOBAL page (GLOBAL 2, the 9th page; stored at the end of the settings record).
-13. **Ping-pong delay and MIDI clock out:** a delay mode (stereo / ping-pong); clock out at the internal tempo while
-    the arp runs.
+\1
+    Built: PLAY is a transport of its own (MIDI Start, clock at 24 a quarter, Stop), the arp on or off; the arp's
+    steps lock to the clock it sends (a step on every 6th tick at 1/16, the pattern's top on the first); it
+    free-runs when stopped; nothing goes out while following MIDI clock. FX 3: DLY MODE (ping-pong: in on the left,
+    each repeat crossing sides) and DLY SYNC (the time from the tempo, or from MIDI clock while it comes in; DLY TIME
+    stays for FREE). Measured: 48 ticks a second at 120 BPM, every arp step on its tick; DLY SYNC 1/8 at 120 BPM is
+    11 025 samples; ping-pong's first repeat left only, the second right only.
 14. **Reverb** after the delay (size, damping, mix), its CPU measured on the unit.
 15. **Brass section** (ARP Omni style): a second voicing with its own registers, filter and envelope, layered on
     the strings.
+16. **Step sequencer** (asked for 2026-11-23): steps on the transport's clock (the same as the arp and MIDI clock
+    out); its design (steps, tracks, the buttons it takes: SEQ is HOLD today) to be settled when it is built.
 
 ## Milestones
 

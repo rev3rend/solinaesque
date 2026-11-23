@@ -61,11 +61,14 @@ static uint32_t fnv_s(uint32_t h, const char *s)
 }
 
 /* a page row's parameter: its table entry and where its value lives */
+/* a page row's parameter and where its value lives; 0 for an empty row (FX 3's last two, for now) */
 static const param_t *row_param(uint32_t page, uint32_t row, int8_t **val)
 {
+    static int8_t none;
     if (page < PG_ARP) {
-        *val = &cur.p[page * 4u + row];
-        return &SP[page * 4u + row];
+        int32_t i = PAGE_P[page][row];
+        *val = i < 0 ? &none : &cur.p[i];
+        return i < 0 ? 0 : &SP[i];
     }
     if (page == PG_MIDI) {
         *val = &set.g2[row];
@@ -75,10 +78,16 @@ static const param_t *row_param(uint32_t page, uint32_t row, int8_t **val)
     return &GP[(page == PG_GLO ? 0u : 4u) + row];
 }
 
+static int row_used(uint32_t page, uint32_t row)  /* the row has a parameter (not one of FX 3's empty ones) */
+{
+    int8_t *v;
+    return row_param(page, row, &v) != 0;
+}
+
 /* a row's fine part (the 14-bit sound parameters; 0 for the rest) */
 static uint32_t row_fine(uint32_t page, uint32_t row)
 {
-    return page < PG_ARP ? cur.f[page * 4u + row] : 0u;
+    return page < PG_ARP && PAGE_P[page][row] >= 0 ? cur.f[PAGE_P[page][row]] : 0u;
 }
 
 /* the fine part goes when a parameter reaches its top (the value is p + f / 128) */
@@ -205,10 +214,12 @@ static int chord_on(void) { return set.chord_n[0] >= 2u; }
 static void flags_text(char *b, unsigned max)    /* HOME's flags: HOLD ARP (CLK: MIDI clock) CHORD REC */
 {
     b[0] = 0;
+    if (arp.run_pub && !arp.ext_pub)
+        cat(b, "PLAY ", max);
     if (ui.hold)
         cat(b, "HOLD ", max);
     if (ui.arp)
-        cat(b, arp.ext_pub ? "ARP CLK " : arp.halt_pub ? "ARP STOP " : "ARP ", max);
+        cat(b, arp.ext_pub ? (arp.halt_pub ? "ARP STOP " : "ARP CLK ") : "ARP ", max);
     if (ui.recording)
         cat(b, "REC ", max);
     else if (chord_on())
@@ -246,7 +257,7 @@ static void draw_page_head(void)
     cv_begin(240, 30, T_BG);
     cv_text(10, 6, &AF_M, PAGE_NAME[ui.page], T_THEME);
     for (r = 0; r < 4u; r++)
-        live |= row_param(ui.page, r, &v)->live;
+        live |= row_param(ui.page, r, &v) ? row_param(ui.page, r, &v)->live : 0u;
     fmt_int(b, ui.page + 1);
     cat(b, "/", sizeof b);
     fmt_int(b + str_len(b), NPAGES);
@@ -266,11 +277,13 @@ static void draw_page_rows(uint32_t r0)          /* two rows (r0, r0 + 1) */
     int8_t *v;
     const int32_t rh = ROW_H, bar = rh == 44 ? 28 : 24, bh = rh == 44 ? 6 : 4;
     for (r = 0; r < 4u; r++)
-        page_live |= row_param(ui.page, r, &v)->live;
+        page_live |= row_param(ui.page, r, &v) ? row_param(ui.page, r, &v)->live : 0u;
     cv_begin(240, 2u * (uint32_t)rh, T_BG);
     for (r = r0; r < r0 + 2u; r++) {
         const param_t *p = row_param(ui.page, r, &v);
         int32_t y = (int32_t)(r - r0) * rh, x;
+        if (!p)                                  /* an empty row */
+            continue;
         char b[20], k[8];
         str_cpy(k, "K", sizeof k);
         fmt_int(b, (int32_t)r + 1);
@@ -392,7 +405,7 @@ static void arp_foot(char *b, unsigned max)      /* the ARP page's footer: the c
         cat(b, t, max);
         cat(b, " BPM", max);
     }
-    cat(b, arp.halt_pub ? "   STOPPED" : arp.ext_pub ? "" : "   ARP + PRESETS", max);
+    cat(b, arp.ext_pub ? (arp.halt_pub ? "   STOPPED" : "") : arp.run_pub ? "   PLAYING" : "   ARP + PRESETS", max);
 }
 
 static void draw_foot(void)
@@ -491,7 +504,7 @@ static void ui_draw(void)
         s[0] = fnv(fnv_s(fnv(h0, cur_index), cur.name), (uint32_t)preset_edited());
         s[1] = sig_preset(h0);
         s[2] = fnv(fnv(fnv(fnv(fnv(note_dots_sig(), (uint32_t)set.oct), set.g[G_TRIG]), ui.hold), ui.arp), m);
-        s[2] = fnv(fnv(fnv(fnv(s[2], ui.recording), (uint32_t)chord_on()), arp.ext_pub), arp.halt_pub);
+        s[2] = fnv(fnv(fnv(fnv(fnv(s[2], ui.recording), (uint32_t)chord_on()), arp.ext_pub), arp.halt_pub), arp.run_pub);
         s[2] = fnv(fnv(fnv(s[2], (uint32_t)cur.p[P_ENS]), cpu_pct5()), vox.cap < MAX_SOUNDING);
         if (all || s[0] != ui.sig[0])
             draw_home_top();
@@ -508,7 +521,7 @@ static void ui_draw(void)
             s[1u + i] = fnv(fnv(fnv(fnv(fnv(h0, ui.page), (uint32_t)*v0), (uint32_t)*v1), row_fine(ui.page, 2u * i)),
                             row_fine(ui.page, 2u * i + 1u));
         }
-        s[3] = fnv(fnv(fnv(m, ui.page == PG_ARP ? set.bpm : 0u), arp.ext_pub), arp.halt_pub);
+        s[3] = fnv(fnv(fnv(fnv(m, ui.page == PG_ARP ? set.bpm : 0u), arp.ext_pub), arp.halt_pub), arp.run_pub);
         if (all || s[0] != ui.sig[0])
             draw_page_head();
         if (all || s[1] != ui.sig[1])
@@ -707,17 +720,19 @@ static void ui_buttons(void)
             case B_LFO: page_open(PG_LFO); break;
             case B_GLO: page_open(ui.page == PG_GLO ? PG_MIDI : PG_GLO); break;   /* again: GLOBAL 2 (MIDI) */
             case B_FX:
-                page_open(ui.page == PG_FX1 ? PG_FX2 : PG_FX1);   /* FX 1 first; again: FX 2, and back */
+                page_open(ui.page == PG_FX1 ? PG_FX2 : ui.page == PG_FX2 ? PG_FX3 : PG_FX1);   /* FX 1, 2, 3, and round */
                 break;
             case B_SEQ:
                 ui.hold ^= 1u;
                 vox.hold = ui.hold;
                 msg(ui.hold ? "HOLD ON" : "HOLD OFF");
                 break;
-            case B_PLAY:                         /* the arp's transport (the ISR flips it); nothing with the arp off */
-                if (ui.arp)
-                    arp.play_req = 1;
-                msg(!ui.arp ? "PLAY: ARP IS OFF" : arp.halt_pub ? "ARP PLAY" : "ARP STOP");
+            case B_PLAY:                         /* the transport (the ISR flips it): MIDI clock out, the arp on it */
+                arp.play_req = 1;
+                if (arp.ext_pub)
+                    msg(arp.halt_pub ? "MIDI CLOCK: ARP PLAYS" : "MIDI CLOCK: ARP STOPPED");
+                else
+                    msg(arp.run_pub ? "STOP: CLOCK OUT STOPPED" : "PLAY: CLOCK OUT RUNNING");
                 break;
             case B_OCTDN:
             case B_OCTUP: {
@@ -817,9 +832,11 @@ static void ui_encoders(void)
             int8_t *v;
             const param_t *p = row_param(ui.page, (uint32_t)r, &v);
             int32_t old = *v;
+            if (!p)                              /* an empty row: its knob does nothing */
+                continue;
             *v = clamp8(*v + s, p);
             if (ui.page < PG_ARP)
-                fine_fix(ui.page * 4u + (uint32_t)r);
+                fine_fix((uint32_t)PAGE_P[ui.page][r]);
             if (ui.page >= PG_ARP && *v != old) {
                 ui.set_dirty = 1;
                 if (ui.page == PG_GLO && r == G_MIDICH)
@@ -849,13 +866,14 @@ static void ui_master(void)                      /* the MASTER pot as the output
 
 static void ui_leds(void)
 {
-    static const uint8_t PAGE_BTN[NPAGES] = {B_EDIT, B_SCL, B_ENV, B_LFO, B_FX, B_FX, B_ARP, B_GLO, B_GLO};
+    static const uint8_t PAGE_BTN[NPAGES] = {B_EDIT, B_SCL, B_ENV, B_LFO, B_FX, B_FX, B_FX, B_ARP, B_GLO, B_GLO};
     uint32_t b, k, blink = (fm1_ms / 250u) & 1u, kb = snd.key_base;
     for (b = 0; b < NB; b++) {
         int on = 0;
         if (ui.page < NPAGES && PAGE_BTN[ui.page] == b)
             on = 1;
-        if ((b == B_PLAY && ui.arp && !arp.halt_pub) || (b == B_REC && (ui.recording ? blink : chord_on())))
+        if ((b == B_PLAY && (arp.ext_pub ? ui.arp && !arp.halt_pub : arp.run_pub)) ||
+            (b == B_REC && (ui.recording ? blink : chord_on())))
             on = 1;
         if ((b == B_HOME && ui.page == PG_HOME) || (b == B_SEQ && ui.hold) || (b == B_ARP && ui.arp) ||
             (b == B_SAVE && ui.saving && blink) || (b == B_OCTDN && set.oct < 0) || (b == B_OCTUP && set.oct > 0))
@@ -892,7 +910,7 @@ static int32_t cc_get(uint32_t k)
     case CT_TEMPO: return ((int32_t)set.bpm - 40) * 127 / 200;
     case CT_ARP: return ui.arp ? 127 : 0;
     case CT_HOLD: return ui.hold ? 127 : 0;
-    case CT_PLAY: return ui.arp && !arp.halt_pub ? 127 : 0;
+    case CT_PLAY: return (arp.ext_pub ? !arp.halt_pub : arp.run_pub) ? 127 : 0;
     case CT_OCT: return (set.oct + 2) * 127 / 4;
     }
     return 0;
@@ -928,8 +946,8 @@ static void cc_set(uint32_t k, int32_t v)
         ui.hold = v >= 64;
         vox.hold = ui.hold;
         break;
-    case CT_PLAY:                                /* run (>= 64) or stop, as PLAY; nothing with the arp off */
-        if (ui.arp && (v >= 64) == arp.halt_pub)
+    case CT_PLAY:                                /* run (>= 64) or stop, as PLAY */
+        if ((v >= 64) != (arp.ext_pub ? !arp.halt_pub : arp.run_pub))
             arp.play_req = 1;
         break;
     case CT_OCT: set.oct = (int8_t)(v * 5 / 128 - 2); break;

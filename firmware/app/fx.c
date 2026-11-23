@@ -70,6 +70,8 @@ static struct {
     uint32_t flg_inc;            /* the flanger's triangle, per block */
     int32_t dly_len;             /* DLY TIME in samples */
     int32_t dly_fb, dly_mix, dly_tone;   /* %, x 128 */
+    int32_t dly_mode;            /* 0 stereo, 1 ping-pong */
+    uint32_t dly_sync_f24;       /* DLY SYNC: the time in 24ths of a quarter (0: FREE, dly_len from DLY TIME) */
 } fxp;
 
 static struct {
@@ -79,6 +81,7 @@ static struct {
     float dly_cur;               /* the delay time now (samples), gliding to fxp.dly_len */
     float dly_lp[2];             /* the tone filter in each feedback loop */
     uint32_t dly_on;             /* the last block had DLY MIX above 0 (turning it on starts at the set time) */
+    int32_t dly_len_ext;         /* DLY SYNC under MIDI clock: the time from its tempo (0: fxp.dly_len) */
     uint32_t dly_quiet;          /* samples the delay still writes zeros and adds nothing (after a stop: one pass
                                   * through its lines silences them without a 176 KB clear in the ISR) */
 } fxs;
@@ -195,7 +198,8 @@ static FM1_FPU __attribute__((noinline)) void fx_block(const int32_t *in, int32_
 
     /* ---- delay */
     {
-        int32_t mixp = fxp.dly_mix, len = fxp.dly_len;
+        int32_t mixp = fxp.dly_mix, len = fxs.dly_len_ext ? fxs.dly_len_ext : fxp.dly_len;
+        const int pp = fxp.dly_mode == 1;       /* ping-pong: in on the left, each repeat crosses to the other side */
         uint32_t w = fxs.dly_w;
         len = len < 16 ? 16 : len > (int32_t)DLY_LEN - 4 ? (int32_t)DLY_LEN - 4 : len;
         if (fxs.dly_cur < 1.0f)
@@ -230,9 +234,9 @@ static FM1_FPU __attribute__((noinline)) void fx_block(const int32_t *in, int32_
                 yr = (float)dly_buf[1][a] * (1.0f - fr) + (float)dly_buf[1][b] * fr;
                 lpl += (yl - lpl) * c;
                 lpr += (yr - lpr) * c;
-                v = l[i] + fb * lpl;
+                v = pp ? 0.5f * (l[i] + r[i]) + fb * lpr : l[i] + fb * lpl;
                 dly_buf[0][w] = (int16_t)(v > 32767.0f ? 32767.0f : v < -32767.0f ? -32767.0f : v);
-                v = r[i] + fb * lpr;
+                v = pp ? fb * lpl : r[i] + fb * lpr;
                 dly_buf[1][w] = (int16_t)(v > 32767.0f ? 32767.0f : v < -32767.0f ? -32767.0f : v);
                 l[i] += mix * lpl;
                 r[i] += mix * lpr;

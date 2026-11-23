@@ -7,9 +7,13 @@
  *             chord on it; the expanded notes then go on as if played (HOLD, the pedal, the arp see them).
  *   arp       when ARP is on, the held (and latched) notes are not played together: one at a time, UP, DOWN,
  *             UP-DOWN, RANDOM or PLAYED (the order they went down), over 1..4 octaves, a step every RATE (1/4 .. 1/32,
- *             triplets) of the tempo, sounding GATE % of the step. The clock counts samples (the internal tempo, 40 ..
- *             240 BPM) or follows MIDI clock (24 a quarter) while it comes in; MIDI start / continue / stop and PLAY
- *             run and stop it. Steps land on block boundaries (32 frames, 0.7 ms).
+ *             triplets) of the tempo, sounding GATE % of the step. It free-runs on the internal tempo (40 .. 240 BPM,
+ *             counted in samples); while the transport runs, its steps lock to the clock the FM-1 sends; while MIDI
+ *             clock comes in (24 a quarter) it follows that, and MIDI start / continue / stop run and stop it.
+ *             Steps land on block boundaries (32 frames, 0.7 ms).
+ *   clock     the transport: PLAY starts it (MIDI Start, then MIDI clock at 24 a quarter of the internal tempo, sent
+ *             on USB) and stops it (MIDI Stop), the arp on or off; the arp's pattern starts from its top on the
+ *             first tick. Nothing goes out while the FM-1 follows MIDI clock (no loops through a DAW).
  *   MIDI out  what the panel plays goes out on USB: the keys (as the chord expands them, HOLD keeping them) or, with
  *             the arp on, its notes; on the chosen channel (OMNI: channel 1). Notes that came in over MIDI are not
  *             echoed (no loops through a DAW), except as the arp's input.
@@ -25,6 +29,7 @@ static struct {
     uint32_t tps;                /* MIDI clock ticks a step (24 / steps a quarter) */
     uint32_t oct;                /* 1..4 */
     uint32_t step_q8;            /* the internal clock's step, samples x 256 */
+    uint32_t tick_q8;            /* the internal clock's tick (a 24th of a quarter: MIDI clock out), samples x 256 */
     uint32_t gfrac;              /* GATE as a share of the step, x 256 */
     uint32_t chord_n;            /* notes in the chord (0: chord memory off) */
     int8_t chord[CHORD_MAX];     /* semitones above the lowest */
@@ -46,9 +51,12 @@ static struct {
     uint32_t out[4];             /* the notes on at MIDI out */
     uint32_t prev_any;           /* the last block had input notes (the first key steps at once) */
     uint8_t ext;                 /* MIDI clock is coming in */
-    uint8_t halt;                /* the transport stopped (PLAY, MIDI stop); 0 at boot: running */
+    uint8_t halt;                /* following MIDI clock: its transport stopped (MIDI stop, or PLAY) */
+    uint8_t run;                 /* the FM-1's own transport runs (PLAY): MIDI clock goes out */
+    uint32_t clk_ph_q8, clk_ticks;   /* its clock: samples into the tick (x 256), ticks since it started */
+    uint32_t clk_step;           /* ticks to the arp's next step on it */
     volatile uint8_t play_req;   /* main loop -> ISR: PLAY pressed (run <-> stop) */
-    volatile uint8_t halt_pub, ext_pub;   /* ISR -> main loop: the transport, the clock (screen, LEDs) */
+    volatile uint8_t halt_pub, ext_pub, run_pub;   /* ISR -> main loop: the transports, the clock (screen, LEDs) */
     volatile int32_t note_pub;   /* ISR -> main loop, tests: the arp's note now */
 } arp;
 
@@ -184,22 +192,10 @@ static __attribute__((noinline)) int32_t arp_next(const uint32_t *in)
 static void arp_block(const uint32_t *in, uint32_t *out, uint32_t n)
 {
     uint32_t any = in[0] | in[1] | in[2] | in[3];
-    if (arp.play_req) {
-        arp.play_req = 0;
-        arp.halt ^= 1u;
-        if (!arp.halt) {
-            arp.idx = 0;
-            arp.ph_q8 = 0;
-            arp.step_due = 1;                    /* (PLAY: the first step at once) */
-        }
-    }
     if (!arp.rnd)
         arp.rnd = 0x9E3779B9u;
-    arp.since_tick += n;
-    if (arp.since_tick > FS / 2u)                /* no tick for half a second: the internal clock again */
-        arp.ext = 0;
     arp_order(in);
-    if (!arp.ext && !arp.halt) {                 /* the internal clock */
+    if (!arp.ext && !arp.run) {                  /* free-running on the internal tempo (the transport stopped) */
         if (arp.note < 0 && !arp.step_due && any && arp.prev_any == 0u)
             arp.step_due = 1, arp.ph_q8 = 0;     /* the first key: a step at once */
         arp.ph_q8 += n << 8;
@@ -221,6 +217,7 @@ static void arp_block(const uint32_t *in, uint32_t *out, uint32_t n)
         arp.step_due = 0;
         if (!arp.halt) {
             uint32_t len = arp.ext && arp.tick_q8 ? arp.tick_q8 * (seqp.tps ? seqp.tps : 6u) : seqp.step_q8;
+            /* (the transport running: the step is the internal one, the clock it sends has the same tempo) */
             arp.note = arp_next(in);
             arp.gate_q8 = (len >> 8) * seqp.gfrac;
             if (!any)
@@ -235,8 +232,55 @@ static void arp_block(const uint32_t *in, uint32_t *out, uint32_t n)
     if (arp.note >= 0)
         seq_bit(out, (uint32_t)arp.note);
     arp.note_pub = arp.note;
+}
+
+/* every block, the arp on or off: PLAY, the transport, MIDI clock out, the external clock's timeout */
+static void seq_clock(uint32_t n)
+{
+    if (arp.play_req) {
+        arp.play_req = 0;
+        if (arp.ext)                             /* following MIDI clock: PLAY stops / continues the arp */
+            arp.halt ^= 1u;
+        else if (!arp.run) {                     /* start: MIDI Start, the first tick at once, the pattern's top */
+            arp.run = 1;
+            arp.clk_ticks = 0;
+            arp.clk_step = 0;
+            arp.clk_ph_q8 = seqp.tick_q8;
+            arp.idx = 0;
+            arp.step_due = 0;
+            midi_out(0xFAu, 0, 0);
+        } else {                                 /* stop: MIDI Stop (the arp free-runs again) */
+            arp.run = 0;
+            arp.ph_q8 = 0;
+            midi_out(0xFCu, 0, 0);
+        }
+    }
+    arp.since_tick += n;
+    if (arp.since_tick > FS / 2u && arp.ext) {   /* no tick for half a second: the internal clock again */
+        arp.ext = 0;
+        arp.halt = 0;
+    }
+    if (arp.run && !arp.ext) {                   /* the FM-1 leads: its ticks, and the arp's steps on them */
+        arp.clk_ph_q8 += n << 8;
+        if (arp.clk_ph_q8 >= seqp.tick_q8) {     /* (at most one a block: 459 samples at 240 BPM) */
+            arp.clk_ph_q8 -= seqp.tick_q8;
+            if (arp.clk_ph_q8 >= seqp.tick_q8)
+                arp.clk_ph_q8 = 0;
+            midi_out(0xF8u, 0, 0);
+            if (!arp.clk_step) {                 /* every tps-th tick, from the first: a step (a countdown, no divide) */
+                if (seqp.on)
+                    arp.step_due++;
+                arp.clk_step = seqp.tps ? seqp.tps : 6u;
+            }
+            arp.clk_step--;
+            arp.clk_ticks++;
+        }
+    }
+    if (!seqp.on)
+        arp.step_due = 0;                        /* (nothing kept for an arp turned on later) */
     arp.halt_pub = arp.halt;
     arp.ext_pub = arp.ext;
+    arp.run_pub = arp.run;
 }
 
 /* MIDI out: the notes that changed since the last block (offs first), at most OUT_PER_BLOCK a block */

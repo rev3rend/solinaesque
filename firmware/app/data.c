@@ -8,7 +8,7 @@
 /* ------------------------------------------------------------ parameters --- */
 /* a parameter's kind: how its stored int8 reads on the screen and what it means to the engine */
 enum { K_PCT, K_BIP, K_ATK, K_DEC, K_REL, K_HZ, K_CUT, K_DLY, K_MS, K_SHAPE, K_TRIG, K_TUNE, K_CH, K_ARPM, K_ARPR,
-       K_OCT, K_VELM, K_ATM, K_ONOFF };
+       K_OCT, K_VELM, K_ATM, K_ONOFF, K_DMODE, K_DSYNC };
 
 typedef struct {
     const char *name;
@@ -20,7 +20,7 @@ typedef struct {
 /* the sound's parameters (a preset): pages STRINGS, FILTER, ENVELOPE, LFO, FX 1, FX 2, then the ensemble type on
  * ALGORITHM. Stored by index: append only, never reorder (the store's records name them by position). */
 enum { P_R16, P_R8, P_R4, P_SHAPE, P_CUT, P_RES, P_FENV, P_KTRK, P_ATK, P_DEC, P_SUS, P_REL, P_LRATE, P_VIB, P_PWM,
-       P_LDLY, P_ENSD, P_ENSR, P_FLGA, P_FLGR, P_DTIME, P_DFB, P_DMIX, P_DTONE, P_ENS, NSP };
+       P_LDLY, P_ENSD, P_ENSR, P_FLGA, P_FLGR, P_DTIME, P_DFB, P_DMIX, P_DTONE, P_ENS, P_DMODE, P_DSYNC, NSP };
 #define NSP_STORED 28            /* room in a stored preset for parameters added later */
 static const param_t SP[NSP] = {
     {"16'", K_PCT, 0, 100, 70, 1},     {"8'", K_PCT, 0, 100, 100, 1},    {"4'", K_PCT, 0, 100, 40, 1},
@@ -35,6 +35,8 @@ static const param_t SP[NSP] = {
     {"DLY TIME", K_DLY, 0, 127, 90, 1}, {"FEEDBACK", K_PCT, 0, 95, 30, 1}, {"DLY MIX", K_PCT, 0, 100, 0, 1},
     {"DLY TONE", K_PCT, 0, 100, 60, 1},
     {"ENSEMBLE", K_PCT, 0, 4, 2, 1},
+    /* (appended, milestone 13: older presets hold 0 here, STEREO and FREE) */
+    {"DLY MODE", K_DMODE, 0, 1, 0, 1}, {"DLY SYNC", K_DSYNC, 0, 9, 0, 1},
 };
 static const char *const ENS_NAME[5] = {"OFF", "I", "II", "III", "FLANGE"};
 
@@ -55,10 +57,20 @@ static const param_t GP2[NG2] = {
     {"CC OUT", K_ONOFF, 0, 1, 1, 1},
 };
 
-enum { PG_STR, PG_FLT, PG_ENV, PG_LFO, PG_FX1, PG_FX2, PG_ARP, PG_GLO, PG_MIDI, NPAGES, PG_HOME = NPAGES };
-static const char *const PAGE_NAME[NPAGES] = {"STRINGS", "FILTER", "ENVELOPE", "LFO", "FX 1", "FX 2", "ARP",
+enum { PG_STR, PG_FLT, PG_ENV, PG_LFO, PG_FX1, PG_FX2, PG_FX3, PG_ARP, PG_GLO, PG_MIDI, NPAGES, PG_HOME = NPAGES };
+static const char *const PAGE_NAME[NPAGES] = {"STRINGS", "FILTER", "ENVELOPE", "LFO", "FX 1", "FX 2", "FX 3", "ARP",
                                               "GLOBAL",
                                               "GLOBAL 2"};
+
+/* the sound pages' rows: their parameters (-1: an empty row; FX 3's last two wait for the reverb) */
+static const int8_t PAGE_P[PG_ARP][4] = {
+    {P_R16, P_R8, P_R4, P_SHAPE},     {P_CUT, P_RES, P_FENV, P_KTRK},   {P_ATK, P_DEC, P_SUS, P_REL},
+    {P_LRATE, P_VIB, P_PWM, P_LDLY},  {P_ENSD, P_ENSR, P_FLGA, P_FLGR}, {P_DTIME, P_DFB, P_DMIX, P_DTONE},
+    {P_DMODE, P_DSYNC, -1, -1},
+};
+
+/* DLY SYNC: the delay's time as a share of a quarter note, x 24 (0: FREE, DLY TIME) */
+static const uint8_t DSYNC_F24[10] = {0, 48, 36, 24, 16, 18, 12, 8, 9, 6};
 
 /* the exponential curves: lo * r^x, r in Q16 so that x = 127 lands on hi (ratio = (hi / lo)^(1 / 127)); an integer
  * loop instead of a libm the target does not have, main loop only (<= 127 multiplies) */
@@ -188,6 +200,12 @@ static void pv_text_f(char *b, unsigned max, const param_t *p, int32_t x, uint32
         return;
     }
     case K_ONOFF: str_cpy(b, x ? "ON" : "OFF", max); return;
+    case K_DMODE: str_cpy(b, x ? "PING-PONG" : "STEREO", max); return;
+    case K_DSYNC: {
+        static const char *const N[10] = {"FREE", "1/2", "1/4.", "1/4", "1/4T", "1/8.", "1/8", "1/8T", "1/16.", "1/16"};
+        str_cpy(b, N[x < 0 ? 0 : x > 9 ? 9 : x], max);
+        return;
+    }
     case K_OCT:
         fmt_int(t, x);
         str_cpy(b, t, max);
