@@ -18,6 +18,9 @@ memory, the arp and every effect). The full description: [docs/SPEC.md](docs/SPE
 - **MIDI:** notes, pedal, bend, mod wheel, velocity and (poly) aftertouch, a CC for every control and Program Change
   in over USB and TRS; the keys, the arp, every knob's CC and preset changes out over USB; presets as SysEx
   (`tools/solinaesque_presets.py backup presets.json` saves the 32 user slots, `restore` puts them back).
+- **MIDItoSpeech:** `docs/synthaccess/Solinaesque.json` lets IDM NYU's
+  [synthaccess MIDItoSpeech](https://github.com/IDMNYU/synthaccess/tree/main/MIDItoSpeech) speak what the FM-1 sends
+  (see `docs/synthaccess/README.md`).
 - **Accessible:** speaks through the [fm1-reader](https://github.com/charlesvestal/fm1-reader) screen reader: connect
   the FM-1 by USB, open <https://charlesvestal.github.io/fm1-reader/> in Chrome or Edge, and every page, knob,
   preset and message is spoken in full words. The FM-1 stays silent on USB until a reader asks.

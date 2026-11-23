@@ -182,6 +182,12 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
   taken; an RPN selected by CC 101 / 100 is ignored) and their 7-bit CCs (a whole step). Sent when the panel changes
   them: NRPN 0:n as CC 99 0, 98 n, 6 MSB, 38 LSB (all four or none), instead of their CC. The panel's knobs move in
   whole steps (the fine part is kept, and goes at the top of the range).
+- **MIDItoSpeech sidecar** (`docs/synthaccess/Solinaesque.json`, for IDM NYU's synthaccess MIDItoSpeech): what the FM-1
+  sends, spoken on a computer; generated from the firmware's tables (`tools/gen_synthaccess.c`) and checked by the
+  suite against every value sent. Percentages and linear ranges as numbers with units, named choices as words, the
+  exponential parameters as the raw value; no transport.
+- **NRPN round trip:** for 14-bit parameters with more than 128 steps (ENV AMOUNT), a value within one 1/128 unit of
+  a whole step is that step, so every step sent comes back exactly.
 - **Program Change:** in, 0..15 load F1..F16 and 16..47 U01..U32 (higher: ignored); out when the panel changes the
   preset (not when a Program Change came in).
 - **Velocity and aftertouch** (GLOBAL 2): VELOCITY OFF (an organ) / LEVEL (each note's own level, velocity / 127;

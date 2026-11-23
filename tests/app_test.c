@@ -2484,6 +2484,21 @@ static void nrpn(void)
     host_render(buf_ctl, CTL);
     host_frame();
     check("data entry for an RPN: ignored", cur.p[P_ATK] >= 98);
+    {   /* every step of every 14-bit parameter goes out as NRPN and comes back exactly (200-step ones too) */
+        uint32_t h, bad = 0;
+        for (h = 0; h < NHIRES; h++) {
+            uint32_t i = HIRES[h];
+            int32_t x;
+            int8_t keep = cur.p[i];
+            for (x = SP[i].lo; x <= SP[i].hi; x++) {
+                cur.p[i] = (int8_t)x, cur.f[i] = 0;
+                hr_set(h, hr_get(h));
+                bad += cur.p[i] != x || cur.f[i] != 0u;
+            }
+            cur.p[i] = keep, cur.f[i] = 0;
+        }
+        check("every step of the 14-bit parameters round-trips over NRPN exactly", bad == 0u);
+    }
     nrpn_in(20, 0, 1);                                    /* ENV AMOUNT: -100 at 0, +100 at 16383 */
     check("NRPN on a bipolar parameter (ENV AMOUNT 0 -> -100)", cur.p[P_FENV] == -100 && cur.f[P_FENV] == 0u);
     out_flush();

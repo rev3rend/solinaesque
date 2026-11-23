@@ -18,6 +18,7 @@
 # APP (firmware/app/; change these with the app):
 #   app          the app on the host platform: screens, layout lint, LEDs, its record in flash, sound, MIDI
 #   preset tool  tools/solinaesque_presets.py's SysEx encoding (the same vector as app_test.c's dump checks)
+#   sidecar      docs/synthaccess/Solinaesque.json (MIDItoSpeech): as generated from the firmware, every value read right
 #                (app_test.c; build/shots/)
 # WEB:
 #   installer    fm1pkg.js / fm1ota.js against Python and a simulated FM-1, the page assembled (web/test_web.mjs)
@@ -57,6 +58,8 @@ run "store: records in flash (A/B, CRC, a save cut at any byte, another app's da
 
 run "installer CLI (fm1_install.py) against a simulated FM-1" python3 tests/install_test.py
 run "preset tool (solinaesque_presets.py): the SysEx sound encoding" python3 tools/solinaesque_presets.py --selftest
+$CC $APP_FLAGS -o "$OUT/gen_synthaccess" tools/gen_synthaccess.c -lm
+run "MIDItoSpeech sidecar: current, and every value read as the FM-1 says it" python3 tests/synthaccess_check.py "$OUT/gen_synthaccess" docs/synthaccess/Solinaesque.json
 
 run "ISR budget: target cost of the audio and scan ISRs (pi32v2 disassembly)" python3 tests/target_budget.py \
     build/firmware.dis tests/target_budget.txt

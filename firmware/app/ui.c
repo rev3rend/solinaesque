@@ -973,6 +973,12 @@ static uint32_t hr_get(uint32_t h)
 static void hr_set(uint32_t h, uint32_t v)
 {
     uint32_t i = HIRES[h], range = (uint32_t)(SP[i].hi - SP[i].lo) * 128u, x = (v * range + 8191u) / 16383u;
+    /* more than 128 steps (ENV AMOUNT: 200): 16 384 values cannot reach every 1/128 between them, so a whole step sent
+     * by hr_get can come back a unit short; within a unit of a step it is the step (every step goes and comes back) */
+    if (range > 16383u) {
+        uint32_t f = x & 127u;
+        x = f == 127u ? x + 1u : f == 1u ? x - 1u : x;
+    }
     cur.p[i] = (int8_t)(SP[i].lo + (int32_t)(x >> 7));
     cur.f[i] = (uint8_t)(x & 127u);
     fine_fix(i);
