@@ -28,7 +28,7 @@ printed buttons; KNOB 1..4 always edit the four parameters of the page on screen
 | SCL | press | FILTER page: cutoff, resonance, envelope amount, key tracking |
 | ENV | press | ENVELOPE page: attack, decay, sustain, release |
 | LFO | press | LFO page: rate, vibrato depth, PWM depth, delay (fade-in) |
-| FX | press; again; again | FX 1 (ensemble depth, ensemble rate, flanger amount, flanger rate); FX 2 (delay time, feedback, mix, tone); FX 3 (DLY MODE stereo / ping-pong, DLY SYNC free or 1/2 .. 1/16 with dotted and triplet values; two rows kept for the reverb); then FX 1 again |
+| FX | press; again; again | FX 1 (ensemble depth, ensemble rate, flanger amount, flanger rate); FX 2 (delay time, feedback, mix, tone); FX 3 (DLY MODE stereo / ping-pong, DLY SYNC free or 1/2 .. 1/16 with dotted and triplet values, REVERB, REV SIZE); then FX 1 again |
 | GLO | press; press again | GLOBAL page: trigger mode (retrig / legato), master tune, MIDI channel, volume; again: GLOBAL 2: VELOCITY, AFTERTOUCH, AT DEPTH, CC OUT |
 | ARP | tap | Arpeggiator on / off |
 | ARP | hold (≥ 0.5 s) | ARP page: mode (up, down, up-down, random, as played), rate (divisions of the tempo), octaves 1..4, gate |
@@ -137,7 +137,7 @@ In the platform store (36 records of 4 KB) under this app's id:
 | Record | Contents |
 | --- | --- |
 | Settings | Global page (trigger mode, master tune, MIDI channel, volume), TRS MIDI on/off, the last saved preset (loaded at power-on; record version 2 stores it as a code: factory f, user 64 + u, so the factory count can change; a version 1 record is converted), octave shift, arp settings and tempo, the 8 stored chords |
-| User presets 1 | U01..U16 (a preset is every sound parameter of the pages and the ensemble type, plus an 11-character name and the 14-bit parameters' fine parts: 68 bytes; record version 2, version 1's 40-byte presets are read too) |
+| User presets 1 | U01..U16 (a preset is every sound parameter of the pages and the ensemble type, plus an 11-character name and the 14-bit parameters' fine parts, room for 32 parameters: 76 bytes; record version 3; versions 1 (40-byte presets) and 2 (68) are read and converted, the parameters they lack at their defaults) |
 | User presets 2 | U17..U32 |
 
 Factory sounds F1..F16 are built in (read-only): CLASSIC, CELLO, VIOLINS, FULL ENS, DARK PAD, BRIGHT, SWELL,
@@ -167,15 +167,15 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
   | 93 | ENS DEPTH | 30 | TRIGGER | 31 | TUNE | 110 | OCTAVE shift (-2..+2) |
   | 7 | VOLUME | 111 | VELOCITY mode | 112 | AFTERTOUCH mode | 113 | AT DEPTH |
 
-  Also: CC 114 DLY MODE, CC 115 DLY SYNC.
+  Also: CC 114 DLY MODE, CC 115 DLY SYNC, CC 91 REVERB, CC 116 REV SIZE.
 
   CC1 mod wheel, CC64 sustain, CC120 / 123 all off, CC121 reset are handled in the audio ISR; a mapped CC is handed
   to the main loop (a counter per control), which owns the parameters. Sending goes the other way through a queue
   to the ISR, which sends it after its notes (one context for MIDI out). A whole new sound (a preset, a revert, INIT,
   a SysEx sound) sends only its Program Change, never all 40 controls.
-- **14-bit NRPN** for the filter, the envelope and the effects (16 parameters: CUTOFF, RESONANCE, ENV AMOUNT, KEY
+- **14-bit NRPN** for the filter, the envelope and the effects (parameters: CUTOFF, RESONANCE, ENV AMOUNT, KEY
   TRACK, ATTACK, DECAY, SUSTAIN, RELEASE, ENS DEPTH, ENS RATE, FLANGER, FLG RATE, DLY TIME, FEEDBACK, DLY MIX,
-  DLY TONE): NRPN 0:<their CC number> (e.g. 0:74 CUTOFF, 0:73 ATTACK), data entry CC 6 (MSB) and CC 38 (LSB),
+  DLY TONE, and REVERB, REV SIZE: 18): NRPN 0:<their CC number> (e.g. 0:74 CUTOFF, 0:73 ATTACK), data entry CC 6 (MSB) and CC 38 (LSB),
   0..16383 across the range. These have real 14-bit resolution inside: a fine part of 1/128 step on top of the
   panel's steps, used by the engine (the filter's cutoff continuous, times and rates interpolated, percentages
   scaled), shown on the pages (values between the steps), stored in user presets. Received: NRPN (the MSB alone is
@@ -191,9 +191,10 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
   from the stronger of channel pressure and the strongest held note's polyphonic pressure, smoothed per block; a
   note's pressure goes with it. The FM-1's own keys have no velocity (100) or pressure.
 - **SysEx presets** (dump.c, `F0 7D 53 4C <cmd> ... F7`): 01 get the current sound (-> 02); 02 <sound> make it current
-  (NEW); 03 <slot> get a user slot (-> 04); 04 <slot> <sound> store it. A sound (format 2, 99 bytes): 02, the name
-  (12 bytes), 28, each parameter as two 7-bit bytes (v + 128), each parameter's fine part (28 bytes), a checksum (the
-  body's sum & 7F); format 1 (01, no fine parts, 71 bytes) is still taken. Malformed frames change nothing.
+  (NEW); 03 <slot> get a user slot (-> 04); 04 <slot> <sound> store it. A sound (format 3, 111 bytes): 03, the name
+  (12 bytes), 32, each parameter as two 7-bit bytes (v + 128), each parameter's fine part (32 bytes), a checksum (the
+  body's sum & 7F); formats 1 (28 parameters, no fine parts, 71 bytes) and 2 (28 and 28, 99 bytes) are still taken,
+  what they lack at its defaults. Malformed frames change nothing.
   `tools/solinaesque_presets.py` backs the 32 user slots up to JSON and restores them.
 - **Out (USB):** the panel keys (as the chord expands them, HOLD keeping them) or, with the arp on, its notes, as note on / off (velocity 100) on the chosen channel (OMNI: channel 1); notes received over MIDI are not echoed (no loops through a DAW); a stop sends every off. No clock out in v1.
 - All notes off on MIDI CC123 and when the channel changes.
@@ -242,11 +243,14 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
     each repeat crossing sides) and DLY SYNC (the time from the tempo, or from MIDI clock while it comes in; DLY TIME
     stays for FREE). Measured: 48 ticks a second at 120 BPM, every arp step on its tick; DLY SYNC 1/8 at 120 BPM is
     11 025 samples; ping-pong's first repeat left only, the second right only.
-14. **Reverb** after the delay (size, damping, mix), its CPU measured on the unit.
-15. **Brass section** (ARP Omni style): a second voicing with its own registers, filter and envelope, layered on
-    the strings.
-16. **Step sequencer** (asked for 2026-11-23): steps on the transport's clock (the same as the arp and MIDI clock
-    out); its design (steps, tracks, the buttons it takes: SEQ is HOLD today) to be settled when it is built.
+14. **Reverb (done):** after the delay, on FX 3: REVERB (mix, added to the dry) and REV SIZE (0.45 .. 0.93 feedback,
+    darker as it grows; ~0.7 s .. ~7 s to -60 dB), both 14-bit (CC / NRPN 91 and 116). A four-line feedback delay
+    network (Hadamard mixing, damped lines of 67 .. 89 ms) behind two allpass diffusers; lines 1 + 3 left, 2 + 4
+    right; 56 KB of pool; float on the FPU. Tails end in exact silence; a stop silences it at once; at REVERB 0 it runs
+    only until its tail has died (12 s), taking no input, then costs nothing. Measured: REV SIZE 20 falls 40 dB in
+    0.58 s, 80 in 1.79 s; the tail's L/R correlation -0.6. In the emulator the reverb costs ~1..3 % of the render with
+    27 keys. Presets now hold 32 parameters (user records version 3, SysEx format 3).
+15. ~~Brass section~~ and 16. ~~Step sequencer~~: dropped (2026-11-23, the player's call).
 
 ## Milestones
 

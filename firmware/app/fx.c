@@ -10,6 +10,7 @@
  *             sweep (60 %: the type's own), 0 % leaves three still taps (no movement, left = right).
  *   flanger   a short delay (0.3 .. 3.8 ms) swept by a triangle (FLG RATE), with feedback, left and right swept in
  *             opposite phase; FLANGER sets feedback and mix together (0: off). With FLANGE it runs at >= 60 %.
+ *   reverb    a four-line feedback delay network after the delay (REVERB, REV SIZE), below at rv_buf
  *   delay     a stereo echo of up to 1 s: DLY TIME (a change glides, like tape, no click), FEEDBACK (0 .. 95 %), a
  *             one-pole low-pass in the loop (DLY TONE: 0 % dark .. 100 % open), DLY MIX added to the dry signal.
  *             Its lines are int16 in the pool (2 x 45 056 samples, 176 KB): a store truncates towards 0, so every tail
@@ -61,6 +62,18 @@ static float ens_buf[ENS_LEN] __attribute__((section(".pool")));
 static float flg_buf[2][FLG_LEN] __attribute__((section(".pool")));
 static int16_t dly_buf[2][DLY_LEN] __attribute__((section(".pool")));
 
+/* the reverb: a four-line feedback delay network (Jot's form) behind two allpass diffusers. Its lines' lengths are
+ * mutually prime, 67 .. 89 ms; their outputs are mixed by a 4 x 4 Hadamard matrix (lossless: the decay is the gain
+ * alone), each through a one-pole low-pass (damping), and fed back with the input. REV SIZE sets the gain (0.45 .. 0.93:
+ * ~0.7 s .. ~7 s to -60 dB) and darkens the damping with it; lines 1 + 3 go left, 2 + 4 right. 56 KB of pool. */
+#define RV_N 4u
+static const uint16_t RV_LEN[RV_N] = {2939, 3203, 3557, 3923};
+static const uint16_t RV_AP[2] = {347, 113};
+#define RV_TOTAL (2939u + 3203u + 3557u + 3923u)
+#define RV_LONGEST 3923u
+static float rv_buf[RV_TOTAL] __attribute__((section(".pool")));
+static float rv_ap[347u + 113u] __attribute__((section(".pool")));
+
 /* the parameters, set by the main loop (sound.c snd_update), integers only: 32-bit stores, read whole by the ISR */
 static struct {
     int32_t ens_type;            /* 0 OFF, 1 I, 2 II, 3 III, 4 FLANGE */
@@ -71,6 +84,7 @@ static struct {
     int32_t dly_len;             /* DLY TIME in samples */
     int32_t dly_fb, dly_mix, dly_tone;   /* %, x 128 */
     int32_t dly_mode;            /* 0 stereo, 1 ping-pong */
+    int32_t rv_mix, rv_size;     /* REVERB, REV SIZE: %, x 128 (14-bit) */
     uint32_t dly_sync_f24;       /* DLY SYNC: the time in 24ths of a quarter (0: FREE, dly_len from DLY TIME) */
 } fxp;
 
@@ -82,6 +96,10 @@ static struct {
     float dly_lp[2];             /* the tone filter in each feedback loop */
     uint32_t dly_on;             /* the last block had DLY MIX above 0 (turning it on starts at the set time) */
     int32_t dly_len_ext;         /* DLY SYNC under MIDI clock: the time from its tempo (0: fxp.dly_len) */
+    uint16_t rv_pos[RV_N], rv_appos[2];
+    float rv_lp[RV_N];           /* each line's damping */
+    uint32_t rv_tail;            /* samples the reverb still runs after REVERB went to 0 (its lines decay to 0) */
+    uint32_t rv_quiet;           /* after a stop: samples it writes zeros and adds nothing (one pass, no clear) */
     uint32_t dly_quiet;          /* samples the delay still writes zeros and adds nothing (after a stop: one pass
                                   * through its lines silences them without a 176 KB clear in the ISR) */
 } fxs;
@@ -263,6 +281,49 @@ static FM1_FPU __attribute__((noinline)) void fx_block(const int32_t *in, int32_
         fxs.dly_w = w;
     }
 
+    /* ---- reverb */
+    if (fxp.rv_mix > 0)
+        fxs.rv_tail = 12u * FS;                  /* (silence from below one LSB takes ~1.6 x its longest decay) */
+    if (fxs.rv_quiet || fxs.rv_tail) {
+        const float s = (float)fxp.rv_size * (0.01f / 128.0f), g = 0.5f * (0.45f + 0.48f * s);   /* (Hadamard / 2) */
+        const float c = 0.75f - 0.35f * s, mix = fxs.rv_quiet ? 0.0f : (float)fxp.rv_mix * (0.0035f / 128.0f);
+        const float in_g = fxs.rv_quiet || !fxp.rv_mix ? 0.0f : 0.25f;
+        uint32_t base[RV_N] = {0, 2939u, 2939u + 3203u, 2939u + 3203u + 3557u}, k;
+        for (i = 0; i < n; i++) {
+            float x = in_g * (l[i] + r[i]), d[RV_N], h[RV_N], v;
+            uint32_t a;
+            /* two allpasses: y = buf - g x; buf = x + g y */
+            a = fxs.rv_appos[0];
+            v = rv_ap[a] - 0.7f * x;
+            rv_ap[a] = x + 0.7f * v;
+            fxs.rv_appos[0] = (uint16_t)(a + 1u >= RV_AP[0] ? 0u : a + 1u);
+            x = v;
+            a = fxs.rv_appos[1];
+            v = rv_ap[347u + a] - 0.7f * x;
+            rv_ap[347u + a] = x + 0.7f * v;
+            fxs.rv_appos[1] = (uint16_t)(a + 1u >= RV_AP[1] ? 0u : a + 1u);
+            x = v;
+            for (k = 0; k < RV_N; k++)
+                d[k] = rv_buf[base[k] + fxs.rv_pos[k]];
+            h[0] = d[0] + d[1] + d[2] + d[3];
+            h[1] = d[0] - d[1] + d[2] - d[3];
+            h[2] = d[0] + d[1] - d[2] - d[3];
+            h[3] = d[0] - d[1] - d[2] + d[3];
+            for (k = 0; k < RV_N; k++) {
+                float lp = fxs.rv_lp[k] + (h[k] * g - fxs.rv_lp[k]) * c, w = (k & 1u ? -x : x) + lp;
+                fxs.rv_lp[k] = lp > -0.5f && lp < 0.5f ? 0.0f : lp;
+                rv_buf[base[k] + fxs.rv_pos[k]] = w > -0.5f && w < 0.5f ? 0.0f : w;   /* tails end at exactly 0 */
+                fxs.rv_pos[k] = (uint16_t)(fxs.rv_pos[k] + 1u >= RV_LEN[k] ? 0u : fxs.rv_pos[k] + 1u);
+            }
+            l[i] += mix * (d[0] + d[2]);
+            r[i] += mix * (d[1] + d[3]);
+        }
+        if (fxs.rv_quiet)
+            fxs.rv_quiet = fxs.rv_quiet > n ? fxs.rv_quiet - n : 0u;
+        if (!fxp.rv_mix && fxs.rv_tail)
+            fxs.rv_tail = fxs.rv_tail > n ? fxs.rv_tail - n : 0u;
+    }
+
     for (i = 0; i < n; i++) {                    /* back to integers (truncation: towards 0) */
         float a = l[i], b = r[i];
         outl[i] = (int32_t)(a > 1e6f ? 1e6f : a < -1e6f ? -1e6f : a);
@@ -275,4 +336,7 @@ static void fx_reset(void)                       /* the ISR, on app_audio_stop: 
     memset(ens_buf, 0, sizeof ens_buf);          /* (10 KB: the short lines are cleared outright) */
     memset(flg_buf, 0, sizeof flg_buf);
     fxs.dly_quiet = DLY_LEN;
+    fxs.rv_quiet = RV_LONGEST + 512u;            /* (every line and diffuser overwritten with zeros, then off) */
+    fxs.rv_tail = 0;
+    fxs.rv_lp[0] = fxs.rv_lp[1] = fxs.rv_lp[2] = fxs.rv_lp[3] = 0.0f;
 }

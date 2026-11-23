@@ -25,7 +25,7 @@
 #define REG_AMP 5000             /* one register at 100 %, Q15 peak (before VOLUME and MASTER): F1 CLASSIC's single
                                   * note ~ -18 dBFS at the default VOLUME, a big chord into the soft knee */
 
-#define NCC 42u                  /* controls in the CC map (CC_NUM, below) */
+#define NCC 44u                  /* controls in the CC map (CC_NUM, below) */
 
 /* phase increments of MIDI notes 0..11 (2^32 f / FS); octave k is these << k */
 static const uint32_t INC0[12] = {796254u, 843601u, 893765u, 946911u, 1003217u, 1062871u,
@@ -273,14 +273,14 @@ static const uint8_t CC_NUM[NCC] = {12, 13, 14, 15, 74, 71, 20, 21, 73, 75, 70, 
                                     79, 22, 23, 24, 25, 26, 27, 28, 29,
                                     30, 31, 7,
                                     102, 103, 104, 105, 106, 107, 108, 109, 110,
-                                    111, 112, 113, 114, 115};
+                                    111, 112, 113, 114, 115, 91, 116};
 static const uint8_t CC_TGT[NCC] = {P_R16, P_R8, P_R4, P_SHAPE, P_CUT, P_RES, P_FENV, P_KTRK,
                                     P_ATK, P_DEC, P_SUS, P_REL, P_LRATE, P_VIB, P_PWM, P_ENSD,
                                     P_LDLY, P_ENSR, P_FLGA, P_FLGR, P_DTIME, P_DFB, P_DMIX, P_DTONE, P_ENS,
                                     CT_G + G_TRIG, CT_G + G_TUNE, CT_G + G_VOL,
                                     CT_G + G_ARPM, CT_G + G_ARPR, CT_G + G_ARPO, CT_G + G_ARPG, CT_TEMPO, CT_ARP,
                                     CT_HOLD, CT_PLAY, CT_OCT,
-                                    CT_G2 + G2_VEL, CT_G2 + G2_AT, CT_G2 + G2_ATD, P_DMODE, P_DSYNC};
+                                    CT_G2 + G2_VEL, CT_G2 + G2_AT, CT_G2 + G2_ATD, P_DMODE, P_DSYNC, P_RVMIX, P_RVSIZE};
 static uint8_t cc_slot[128];     /* CC number -> its index in CC_NUM, 0xFF none (snd_init) */
 static uint32_t CC_NUM_OF(uint32_t target)      /* a sound parameter's CC number (the map's first for it) */
 {
@@ -795,6 +795,8 @@ static void snd_update(void)
     fxp.dly_mix = cur.p[P_DMIX] * 128 + cur.f[P_DMIX];
     fxp.dly_tone = cur.p[P_DTONE] * 128 + cur.f[P_DTONE];
     fxp.dly_mode = cur.p[P_DMODE];
+    fxp.rv_mix = cur.p[P_RVMIX] * 128 + cur.f[P_RVMIX];
+    fxp.rv_size = cur.p[P_RVSIZE] * 128 + cur.f[P_RVSIZE];
     fxp.dly_sync_f24 = DSYNC_F24[cur.p[P_DSYNC] % 10];
     if (fxp.dly_sync_f24)                        /* DLY SYNC: the time from the tempo (110 250 = FS x 60 / 24) */
         fxp.dly_len = (int32_t)(110250u * fxp.dly_sync_f24 / set.bpm);

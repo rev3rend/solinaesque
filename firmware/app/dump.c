@@ -7,10 +7,11 @@
  *   02 <sound>        it becomes the current sound (NEW: SAVE stores it)
  *   03 <slot>         get user slot 0..31      -> 04 <slot> <sound>
  *   04 <slot> <sound> store it in that user slot (written to flash)
- *   sound     02 (format), the name (12 bytes, ASCII, 0-padded), the parameter count (28), each parameter as two
- *             7-bit bytes (v + 128: high bit, low 7 bits), each parameter's fine part (28 bytes, 0..127: the 14-bit
- *             parameters' 1/128 steps), a checksum (the sum of every byte from the format on, & 7F). Format 01 (no
- *             fine parts, 71 bytes) is still taken.
+ *   sound     03 (format), the name (12 bytes, ASCII, 0-padded), the parameter count (32), each parameter as two
+ *             7-bit bytes (v + 128: high bit, low 7 bits), each parameter's fine part (32 bytes, 0..127: the 14-bit
+ *             parameters' 1/128 steps), a checksum (the sum of every byte from the format on, & 7F); 111 bytes.
+ *             Formats 01 (28 parameters, no fine parts, 71 bytes) and 02 (28 and 28, 99 bytes) are still taken: the
+ *             parameters they lack at their defaults.
  * A frame that is not well formed changes nothing (and says so). Replies wait for room in the USB queue (never
  * blocking), given up after a second. */
 
@@ -18,9 +19,11 @@
 #define SL_H1 0x53u
 #define SL_H2 0x4Cu
 enum { SL_GET = 1, SL_SOUND = 2, SL_GETSLOT = 3, SL_SLOT = 4 };
-#define SL_FORMAT 2u
-#define SL_BODY1 (1u + NAME_LEN + 1u + 2u * NSP_STORED + 1u)   /* format 1: 71 bytes */
-#define SL_BODY (SL_BODY1 + NSP_STORED)                         /* format 2: 99 bytes */
+#define SL_FORMAT 3u
+#define SL_N12 28u                                              /* formats 1 and 2: 28 parameters */
+#define SL_BODY1 (1u + NAME_LEN + 1u + 2u * SL_N12 + 1u)        /* format 1: 71 bytes */
+#define SL_BODY2 (SL_BODY1 + SL_N12)                            /* format 2: 99 bytes */
+#define SL_BODY (1u + NAME_LEN + 1u + 3u * NSP_STORED + 1u)     /* format 3: 111 bytes */
 
 static struct {
     uint8_t pending;             /* a reply waits: SL_SOUND or SL_SLOT */
@@ -51,9 +54,12 @@ static uint32_t sl_encode(const preset_t *p, uint8_t *b)   /* a sound's body; it
 
 static int sl_decode(const uint8_t *b, uint32_t n, preset_t *p)   /* 0: a good body, checked into p */
 {
-    uint32_t i, sum = 0;
-    if (!((n == SL_BODY && b[0] == 2u) || (n == SL_BODY1 && b[0] == 1u)) || b[1u + NAME_LEN] != NSP_STORED)
+    uint32_t i, sum = 0, c;
+    if (!((n == SL_BODY && b[0] == 3u && b[1u + NAME_LEN] == NSP_STORED) ||
+          (n == SL_BODY2 && b[0] == 2u && b[1u + NAME_LEN] == SL_N12) ||
+          (n == SL_BODY1 && b[0] == 1u && b[1u + NAME_LEN] == SL_N12)))
         return -1;
+    c = b[1u + NAME_LEN];                        /* the parameters it carries */
     for (i = 0; i + 1u < n; i++)
         sum += b[i];
     if ((sum & 0x7Fu) != b[n - 1u])
@@ -61,14 +67,16 @@ static int sl_decode(const uint8_t *b, uint32_t n, preset_t *p)   /* 0: a good b
     memset(p, 0, sizeof *p);
     for (i = 0; i < NAME_LEN; i++)
         p->name[i] = (char)b[1u + i];
-    for (i = 0; i < NSP_STORED; i++) {
+    for (i = 0; i < c; i++) {
         uint32_t hi = b[2u + NAME_LEN + 2u * i], lo = b[3u + NAME_LEN + 2u * i];
         if (hi > 1u)
             return -1;
         p->p[i] = (int8_t)((int32_t)(hi << 7 | lo) - 128);
-        if (n == SL_BODY)
-            p->f[i] = b[2u + NAME_LEN + 2u * NSP_STORED + i];
+        if (b[0] >= 2u)
+            p->f[i] = b[2u + NAME_LEN + 2u * c + i];
     }
+    for (i = c; i < NSP; i++)                    /* (an older format: what it lacks at its defaults) */
+        p->p[i] = SP[i].def;
     preset_check(p);                             /* ranges, the name's characters (never trust what comes in) */
     return 0;
 }

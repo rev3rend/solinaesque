@@ -10,9 +10,9 @@
   solinaesque_presets.py --selftest                                    the encoding, no FM-1 needed
 
 Frames: F0 7D 53 4C <cmd> ... F7. 01 get the current sound (-> 02 <sound>); 02 <sound> make it current; 03 <slot>
-get a user slot (-> 04 <slot> <sound>); 04 <slot> <sound> store it. A sound: 02, the name (12 bytes), 28, each
-parameter as two 7-bit bytes (v + 128), each parameter's fine part (28 bytes: 1/128 steps of the 14-bit
-parameters), a checksum (the sum of the body's bytes, & 7F); format 01 (no fine parts) is read too. Needs mido with
+get a user slot (-> 04 <slot> <sound>); 04 <slot> <sound> store it. A sound: 03, the name (12 bytes), 32, each
+parameter as two 7-bit bytes (v + 128), each parameter's fine part (32 bytes: 1/128 steps of the 14-bit
+parameters), a checksum (the sum of the body's bytes, & 7F); formats 01 and 02 (28 parameters) are read too. Needs
 python-rtmidi. The FM-1's port name can differ (macOS may show a cached name such as "BlessedUnion BlessedMIDI");
 without --port the first port that answers is used.
 """
@@ -23,16 +23,19 @@ import time
 
 HEADER = [0x7D, 0x53, 0x4C]
 GET, SOUND, GETSLOT, SLOT = 1, 2, 3, 4
-NAME_LEN, NPARAM, NUSER = 12, 28, 32
+NAME_LEN, NPARAM, NUSER = 12, 32, 32          # format 3: 32 parameters (formats 1 and 2: 28)
+N12 = 28
 PARAMS = ["16'", "8'", "4'", "SHAPE", "CUTOFF", "RESONANCE", "ENV AMOUNT", "KEY TRACK", "ATTACK", "DECAY",
           "SUSTAIN", "RELEASE", "LFO RATE", "VIBRATO", "PWM", "LFO DELAY", "ENS DEPTH", "ENS RATE", "FLANGER",
-          "FLG RATE", "DLY TIME", "FEEDBACK", "DLY MIX", "DLY TONE", "ENSEMBLE"]   # data.c SP order; the rest spare
+          "FLG RATE", "DLY TIME", "FEEDBACK", "DLY MIX", "DLY TONE", "ENSEMBLE", "DLY MODE", "DLY SYNC",
+          "REVERB", "REV SIZE"]                                       # data.c SP order; the rest spare
+DEFAULTS = {28: 50}                                                   # a parameter formats 1 and 2 lack: its default
 
 
 def encode(sound):
     """{"name": str, "params": [int x 28], "fine": [0..127 x 28] (optional)} -> the body bytes (format 2)"""
     name = sound["name"].encode("ascii", "replace")[:NAME_LEN - 1]
-    b = [2] + [c & 0x7F for c in name] + [0] * (NAME_LEN - len(name)) + [NPARAM]
+    b = [3] + [c & 0x7F for c in name] + [0] * (NAME_LEN - len(name)) + [NPARAM]
     params = list(sound["params"]) + [0] * (NPARAM - len(sound["params"]))
     fine = list(sound.get("fine", [])) + [0] * NPARAM
     for v in params[:NPARAM]:
@@ -47,15 +50,21 @@ def encode(sound):
 def decode(b):
     """the body bytes -> {"name", "params"}; ValueError if it is not well formed"""
     b = list(b)
-    v1 = 1 + NAME_LEN + 1 + 2 * NPARAM + 1
-    if not ((len(b) == v1 and b[0] == 1) or (len(b) == v1 + NPARAM and b[0] == 2)) or b[1 + NAME_LEN] != NPARAM:
+    v1 = 1 + NAME_LEN + 1 + 2 * N12 + 1
+    ok = (len(b) == v1 and b[0] == 1 and b[1 + NAME_LEN] == N12) or \
+         (len(b) == v1 + N12 and b[0] == 2 and b[1 + NAME_LEN] == N12) or \
+         (len(b) == 1 + NAME_LEN + 1 + 3 * NPARAM + 1 and b[0] == 3 and b[1 + NAME_LEN] == NPARAM)
+    if not ok:
         raise ValueError("not a Solinaesque sound")
+    n = b[1 + NAME_LEN]
     if sum(b[:-1]) & 0x7F != b[-1]:
         raise ValueError("bad checksum")
     name = bytes(c for c in b[1:1 + NAME_LEN] if c).decode("ascii", "replace")
-    params = [((b[2 + NAME_LEN + 2 * i] << 7) | b[3 + NAME_LEN + 2 * i]) - 128 for i in range(NPARAM)]
-    fine = b[2 + NAME_LEN + 2 * NPARAM:-1] if b[0] == 2 else [0] * NPARAM
-    return {"name": name, "params": params, "fine": list(fine)}
+    params = [((b[2 + NAME_LEN + 2 * i] << 7) | b[3 + NAME_LEN + 2 * i]) - 128 for i in range(n)]
+    fine = list(b[2 + NAME_LEN + 2 * n:-1]) if b[0] >= 2 else [0] * n
+    params += [DEFAULTS.get(i, 0) for i in range(n, NPARAM)]
+    fine += [0] * (NPARAM - n)
+    return {"name": name, "params": params, "fine": fine}
 
 
 def readable(sound):
@@ -99,15 +108,15 @@ class FM1:
 
 def selftest():
     s = {"name": "BRIGHT", "params": [40, 100, 100, 0, 127, 10, 0, 50, 55, 64, 100, 70, 98, 0, 0, 0, 55, 52, 0, 20,
-                                      90, 30, 0, 60, 1, 0, 0, 0]}
+                                      90, 30, 0, 60, 1, 0, 0, 0, 50, 0, 0, 0]}
     b = encode(s)
-    assert len(b) == 99 and b[0] == 2 and b[13] == 28 and b[14:16] == [1, 40], b[:16]   # 16' 40: 168 = 1, 40
-    assert decode(b) == {**s, "fine": [0] * 28}
-    s2 = {"name": "X", "params": [-100] + [127] * 27, "fine": [0] * 4 + [77] + [0] * 23}   # CUTOFF + 77/128
+    assert len(b) == 111 and b[0] == 3 and b[13] == 32 and b[14:16] == [1, 40], b[:16]   # 16' 40: 168 = 1, 40
+    assert decode(b) == {**s, "fine": [0] * 32}
+    s2 = {"name": "X", "params": [-100] + [127] * 31, "fine": [0] * 4 + [77] + [0] * 27}   # CUTOFF + 77/128
     assert decode(encode(s2)) == s2
-    v1 = [1] + b[1:14 + 56]                                   # format 1: no fine parts, its own checksum
+    v1 = [1] + b[1:13] + [28] + b[14:14 + 56]                 # format 1: 28 parameters, no fine parts
     v1 = v1 + [sum(v1) & 0x7F]
-    assert decode(v1) == {**s, "fine": [0] * 28}
+    assert decode(v1) == {**s, "fine": [0] * 32}              # (REV SIZE at its default, 50)
     bad = encode(s)
     bad[-1] ^= 1
     try:

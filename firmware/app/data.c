@@ -20,8 +20,8 @@ typedef struct {
 /* the sound's parameters (a preset): pages STRINGS, FILTER, ENVELOPE, LFO, FX 1, FX 2, then the ensemble type on
  * ALGORITHM. Stored by index: append only, never reorder (the store's records name them by position). */
 enum { P_R16, P_R8, P_R4, P_SHAPE, P_CUT, P_RES, P_FENV, P_KTRK, P_ATK, P_DEC, P_SUS, P_REL, P_LRATE, P_VIB, P_PWM,
-       P_LDLY, P_ENSD, P_ENSR, P_FLGA, P_FLGR, P_DTIME, P_DFB, P_DMIX, P_DTONE, P_ENS, P_DMODE, P_DSYNC, NSP };
-#define NSP_STORED 28            /* room in a stored preset for parameters added later */
+       P_LDLY, P_ENSD, P_ENSR, P_FLGA, P_FLGR, P_DTIME, P_DFB, P_DMIX, P_DTONE, P_ENS, P_DMODE, P_DSYNC, P_RVMIX, P_RVSIZE, NSP };
+#define NSP_STORED 32            /* room in a stored preset for parameters added later (28 up to user records v2) */
 static const param_t SP[NSP] = {
     {"16'", K_PCT, 0, 100, 70, 1},     {"8'", K_PCT, 0, 100, 100, 1},    {"4'", K_PCT, 0, 100, 40, 1},
     {"SHAPE", K_SHAPE, 0, 99, 0, 1},   {"CUTOFF", K_CUT, 0, 127, 127, 1}, {"RESONANCE", K_PCT, 0, 100, 0, 1},
@@ -37,6 +37,8 @@ static const param_t SP[NSP] = {
     {"ENSEMBLE", K_PCT, 0, 4, 2, 1},
     /* (appended, milestone 13: older presets hold 0 here, STEREO and FREE) */
     {"DLY MODE", K_DMODE, 0, 1, 0, 1}, {"DLY SYNC", K_DSYNC, 0, 9, 0, 1},
+    /* (appended, milestone 14) */
+    {"REVERB", K_PCT, 0, 100, 0, 1},   {"REV SIZE", K_PCT, 0, 100, 50, 1},
 };
 static const char *const ENS_NAME[5] = {"OFF", "I", "II", "III", "FLANGE"};
 
@@ -62,11 +64,11 @@ static const char *const PAGE_NAME[NPAGES] = {"STRINGS", "FILTER", "ENVELOPE", "
                                               "GLOBAL",
                                               "GLOBAL 2"};
 
-/* the sound pages' rows: their parameters (-1: an empty row; FX 3's last two wait for the reverb) */
+/* the sound pages' rows: their parameters (-1 would be an empty row) */
 static const int8_t PAGE_P[PG_ARP][4] = {
     {P_R16, P_R8, P_R4, P_SHAPE},     {P_CUT, P_RES, P_FENV, P_KTRK},   {P_ATK, P_DEC, P_SUS, P_REL},
     {P_LRATE, P_VIB, P_PWM, P_LDLY},  {P_ENSD, P_ENSR, P_FLGA, P_FLGR}, {P_DTIME, P_DFB, P_DMIX, P_DTONE},
-    {P_DMODE, P_DSYNC, -1, -1},
+    {P_DMODE, P_DSYNC, P_RVMIX, P_RVSIZE},
 };
 
 /* DLY SYNC: the delay's time as a share of a quarter note, x 24 (0: FREE, DLY TIME) */
@@ -230,10 +232,11 @@ typedef struct {
  * the envelope, the effects. A bit per parameter index. */
 #define HIRES_MASK (1u << P_CUT | 1u << P_RES | 1u << P_FENV | 1u << P_KTRK | 1u << P_ATK | 1u << P_DEC | \
                     1u << P_SUS | 1u << P_REL | 1u << P_ENSD | 1u << P_ENSR | 1u << P_FLGA | 1u << P_FLGR | \
-                    1u << P_DTIME | 1u << P_DFB | 1u << P_DMIX | 1u << P_DTONE)
-#define NHIRES 16u
+                    1u << P_DTIME | 1u << P_DFB | 1u << P_DMIX | 1u << P_DTONE | 1u << P_RVMIX | 1u << P_RVSIZE)
+#define NHIRES 18u
 static const uint8_t HIRES[NHIRES] = {P_CUT, P_RES, P_FENV, P_KTRK, P_ATK, P_DEC, P_SUS, P_REL,
-                                      P_ENSD, P_ENSR, P_FLGA, P_FLGR, P_DTIME, P_DFB, P_DMIX, P_DTONE};
+                                      P_ENSD, P_ENSR, P_FLGA, P_FLGR, P_DTIME, P_DFB, P_DMIX, P_DTONE,
+                                      P_RVMIX, P_RVSIZE};
 static int hires(uint32_t i) { return i < 32u && ((HIRES_MASK >> i) & 1u); }
 
 #define NFACT 16
@@ -248,42 +251,42 @@ static int hires(uint32_t i) { return i < 32u && ((HIRES_MASK >> i) & 1u); }
  * Designed from the engine; to be tuned by ear on the unit. */
 static const preset_t FACTORY[NFACT] = {
     /* F1 the string machine: 16' + 8' + some 4', a gentle swell, ensemble II at ~0.6 / 6 Hz */
-    {"CLASSIC", {60, 100, 50, 0, 105, 0, 0, 30, 75, 64, 100, 85, 98, 0, 0, 0, 60, 52, 0, 20, 90, 30, 0, 60, 2}},
+    {"CLASSIC", {60, 100, 50, 0, 105, 0, 0, 30, 75, 64, 100, 85, 98, 0, 0, 0, 60, 52, 0, 20, 90, 30, 0, 60, 2, 0, 0, 0, 50}},
     /* F2 low, darker, a slow bow and late vibrato */
-    {"CELLO", {100, 70, 0, 10, 85, 15, 20, 50, 85, 70, 90, 80, 98, 15, 0, 15, 50, 52, 0, 20, 90, 30, 0, 60, 1}},
+    {"CELLO", {100, 70, 0, 10, 85, 15, 20, 50, 85, 70, 90, 80, 98, 15, 0, 15, 50, 52, 0, 20, 90, 30, 0, 60, 1, 0, 0, 0, 50}},
     /* F3 8' + 4', bright, vibrato fading in, a touch of echo */
-    {"VIOLINS", {0, 100, 80, 0, 112, 5, 10, 40, 80, 64, 100, 85, 100, 20, 0, 20, 65, 52, 0, 20, 100, 25, 10, 50, 2}},
+    {"VIOLINS", {0, 100, 80, 0, 112, 5, 10, 40, 80, 64, 100, 85, 100, 20, 0, 20, 65, 52, 0, 20, 100, 25, 10, 50, 2, 0, 0, 0, 50}},
     /* F4 every register, the deep ensemble, a room of echo */
-    {"FULL ENS", {90, 100, 80, 10, 120, 0, 0, 20, 78, 64, 100, 90, 98, 0, 0, 0, 70, 50, 0, 20, 110, 35, 15, 55, 3}},
+    {"FULL ENS", {90, 100, 80, 10, 120, 0, 0, 20, 78, 64, 100, 90, 98, 0, 0, 0, 70, 50, 0, 20, 110, 35, 15, 55, 3, 0, 0, 0, 50}},
     /* F5 saw + square, low cutoff with resonance, slow in and out, dark echoes */
-    {"DARK PAD", {100, 80, 0, 40, 72, 25, 15, 0, 100, 90, 85, 100, 30, 0, 0, 0, 80, 40, 0, 20, 115, 45, 20, 35, 3}},
+    {"DARK PAD", {100, 80, 0, 40, 72, 25, 15, 0, 100, 90, 85, 100, 30, 0, 0, 0, 80, 40, 0, 20, 115, 45, 20, 35, 3, 0, 0, 0, 50}},
     /* F6 8' + 4' wide open, quick, ensemble I */
-    {"BRIGHT", {40, 100, 100, 0, 127, 10, 0, 50, 55, 64, 100, 70, 98, 0, 0, 0, 55, 52, 0, 20, 90, 30, 0, 60, 1}},
+    {"BRIGHT", {40, 100, 100, 0, 127, 10, 0, 50, 55, 64, 100, 70, 98, 0, 0, 0, 55, 52, 0, 20, 90, 30, 0, 60, 1, 0, 0, 0, 50}},
     /* F7 a long attack opening the filter with it, late vibrato */
-    {"SWELL", {80, 100, 50, 0, 50, 30, 70, 20, 112, 100, 100, 100, 96, 12, 0, 50, 60, 52, 0, 20, 105, 40, 20, 50, 2}},
+    {"SWELL", {80, 100, 50, 0, 50, 30, 70, 20, 112, 100, 100, 100, 96, 12, 0, 50, 60, 52, 0, 20, 105, 40, 20, 50, 2, 0, 0, 0, 50}},
     /* F8 a pulse with slow PWM through the flanger and long echoes */
-    {"SPACE", {60, 100, 60, 75, 110, 10, 0, 0, 88, 64, 100, 110, 35, 0, 40, 0, 70, 40, 45, 15, 120, 70, 45, 45, 4}},
+    {"SPACE", {60, 100, 60, 75, 110, 10, 0, 0, 88, 64, 100, 110, 35, 0, 40, 0, 70, 40, 45, 15, 120, 70, 45, 45, 4, 0, 0, 0, 50}},
     /* F9 a brass section: the filter envelope bites and falls back, a little vibrato, ensemble II (by ear) */
-    {"BRASS", {0, 100, 40, 0, 60, 20, 55, 40, 60, 85, 70, 70, 98, 8, 0, 12, 40, 52, 0, 20, 90, 30, 0, 60, 2}},
+    {"BRASS", {0, 100, 40, 0, 60, 20, 55, 40, 60, 85, 70, 70, 98, 8, 0, 12, 40, 52, 0, 20, 90, 30, 0, 60, 2, 0, 0, 0, 50}},
     /* F10 squares in all registers (16' 60, 8' and 4' 80: balanced by ear), instant on and off, a fast ensemble */
-    {"ORGAN", {60, 80, 80, 66, 115, 0, 0, 0, 10, 0, 100, 30, 104, 0, 0, 0, 50, 70, 0, 20, 90, 30, 0, 60, 2}},
+    {"ORGAN", {60, 80, 80, 66, 115, 0, 0, 0, 10, 0, 100, 30, 104, 0, 0, 0, 50, 70, 0, 20, 90, 30, 0, 60, 2, 0, 0, 0, 50}},
     /* F11 8' alone, a square with deep slow PWM fading in after 120 ms: hollow and moving (by ear) */
-    {"HOLLOW", {0, 100, 0, 66, 95, 15, 0, 20, 90, 64, 100, 95, 45, 0, 90, 3, 50, 45, 0, 20, 100, 30, 15, 40, 1}},
+    {"HOLLOW", {0, 100, 0, 66, 95, 15, 0, 20, 90, 64, 100, 95, 45, 0, 90, 3, 50, 45, 0, 20, 100, 30, 15, 40, 1, 0, 0, 0, 50}},
     /* F12 a narrow pulse, 4' leading, a slow 585 ms attack, 717 Hz with strong resonance tracking the keys (by ear) */
-    {"GLASS", {0, 60, 100, 85, 68, 80, 10, 80, 95, 64, 100, 100, 60, 0, 30, 0, 50, 52, 0, 20, 90, 50, 30, 70, 2}},
+    {"GLASS", {0, 60, 100, 85, 68, 80, 10, 80, 95, 64, 100, 100, 60, 0, 30, 0, 50, 52, 0, 20, 90, 50, 30, 70, 2, 0, 0, 0, 50}},
     /* F13 16' first, rounded, for the left hand: instant attack, a 21 ms decay to 70 % sustain: a punch (by ear) */
-    {"BASSES", {100, 50, 0, 0, 75, 10, 0, 60, 0, 26, 70, 80, 98, 10, 0, 15, 45, 52, 0, 20, 90, 30, 0, 60, 1}},
+    {"BASSES", {100, 50, 0, 0, 75, 10, 0, 60, 0, 26, 70, 80, 98, 10, 0, 15, 45, 52, 0, 20, 90, 30, 0, 60, 1, 0, 0, 0, 50}},
     /* F14 no sustain: the filter envelope plucks, the echo carries it */
-    {"PLUCK", {30, 100, 60, 0, 55, 30, 75, 40, 0, 75, 0, 75, 98, 0, 0, 0, 50, 52, 0, 20, 95, 35, 25, 50, 2}},
+    {"PLUCK", {30, 100, 60, 0, 55, 30, 75, 40, 0, 75, 0, 75, 98, 0, 0, 0, 50, 52, 0, 20, 95, 35, 25, 50, 2, 0, 0, 0, 50}},
     /* F15 resonance at a vowel-like cutoff, the deep ensemble, late vibrato */
-    {"VOX", {40, 100, 30, 25, 88, 35, 0, 30, 92, 64, 100, 95, 100, 10, 0, 25, 75, 48, 0, 20, 115, 35, 15, 40, 3}},
+    {"VOX", {40, 100, 30, 25, 88, 35, 0, 30, 92, 64, 100, 95, 100, 10, 0, 25, 75, 48, 0, 20, 115, 35, 15, 40, 3, 0, 0, 0, 50}},
     /* F16 a plain voice into a dark, long tape echo */
-    {"ECHOES", {0, 100, 40, 0, 100, 0, 0, 30, 60, 80, 60, 85, 98, 0, 0, 0, 40, 52, 0, 20, 108, 65, 55, 30, 1}},
+    {"ECHOES", {0, 100, 40, 0, 100, 0, 0, 30, 60, 80, 60, 85, 98, 0, 0, 0, 40, 52, 0, 20, 108, 65, 55, 30, 1, 0, 0, 0, 50}},
 };
 
 /* INIT (SAVE held; a slot cleared): one 8' saw, the filter open, no LFO, no effects, a quick envelope */
 static const preset_t INIT_SOUND =
-    {"INIT", {0, 100, 0, 0, 127, 0, 0, 0, 20, 64, 100, 50, 64, 0, 0, 0, 60, 52, 0, 20, 90, 30, 0, 60, 0}};
+    {"INIT", {0, 100, 0, 0, 127, 0, 0, 0, 20, 64, 100, 50, 64, 0, 0, 0, 60, 52, 0, 20, 90, 30, 0, 60, 0, 0, 0, 0, 50}};
 
 static preset_t cur;             /* the sound being played (edited by the pages; SAVE stores it) */
 static uint32_t snd_epoch;       /* bumped when the whole sound is replaced (a preset, a revert, INIT, a dump): MIDI
@@ -412,8 +415,11 @@ static void settings_check(void)
 #define REC_SETTINGS 0u
 #define REC_USER0 1u
 #define USER_PER_REC 16u
-#define DATA_VER 2u              /* the user presets' records: 2 adds each preset's fine parts (68 bytes; 1: 40) */
-#define PRESET_V1 40u            /* a version 1 preset: the name and the parameters */
+#define DATA_VER 3u              /* the user presets' records: 3 holds 32 parameters and their fine parts (76 bytes);
+                                  * 2: 28 and 28 (68), 1: 28 parameters, no fine parts (40) */
+#define PRESET_V1 40u
+#define PRESET_V2 68u
+#define NSP_V12 28u              /* the parameters a version 1 or 2 preset holds */
 #define SET_VER 2u               /* the settings' record: 2 stores last_preset as a code (1: a plain index) */
 typedef struct {
     uint16_t ver, size;          /* DATA_VER; sizeof the payload that follows */
@@ -467,14 +473,26 @@ static void data_load(void)                      /* defaults first, then what wa
         memset(&rec_user, 0, sizeof rec_user);
         n = store_load(REC_USER0 + r, APP_ID, &rec_user, sizeof rec_user);
         if (n >= (int32_t)sizeof(rec_head_t) && rec_user.h.ver >= 1u) {
-            /* version 1 holds 40-byte presets (no fine parts): the first 40 bytes of today's, read one by one */
-            uint32_t psz = rec_user.h.ver == 1u ? PRESET_V1 : sizeof(preset_t);
-            uint32_t have = ((uint32_t)n - sizeof(rec_head_t)) / psz;
+            /* older versions held 28 parameters (and, from 2, their fine parts): read field by field, the parameters
+             * they did not have at their defaults */
+            uint32_t ver = rec_user.h.ver, psz = ver == 1u ? PRESET_V1 : ver == 2u ? PRESET_V2 : sizeof(preset_t);
+            uint32_t have = ((uint32_t)n - sizeof(rec_head_t)) / psz, k;
             const uint8_t *raw = (const uint8_t *)&rec_user + sizeof(rec_head_t);
             for (i = 0; i < have && i < USER_PER_REC; i++) {
                 preset_t q;
+                const uint8_t *e = raw + i * psz;
                 memset(&q, 0, sizeof q);
-                memcpy(&q, raw + i * psz, psz < sizeof q ? psz : sizeof q);
+                if (ver >= 3u)
+                    memcpy(&q, e, sizeof q);
+                else {
+                    memcpy(q.name, e, NAME_LEN);
+                    for (k = 0; k < NSP_V12; k++) {
+                        q.p[k] = (int8_t)e[NAME_LEN + k];
+                        q.f[k] = ver == 2u ? e[NAME_LEN + NSP_V12 + k] : 0u;
+                    }
+                    for (k = NSP_V12; k < NSP; k++)
+                        q.p[k] = SP[k].def;
+                }
                 preset_check(&q);
                 user[r * USER_PER_REC + i] = q;
             }

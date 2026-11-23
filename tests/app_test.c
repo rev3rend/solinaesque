@@ -463,6 +463,7 @@ static void persistence(void)
 
 /* ---------------------------------------------------------------- presets --- */
 static int32_t peak(const int32_t *b, uint32_t frames);   /* (sound helpers, below) */
+static void nrpn_in(uint32_t num, uint32_t v14, int lsb);
 static void voice(int r16, int r8, int r4, int atk, int rel);
 static void silence(void);
 static void presets(void)
@@ -740,6 +741,16 @@ static int32_t peak_ch(const int32_t *b, uint32_t frames, uint32_t ch)   /* one 
     return m;
 }
 
+static uint32_t tail_time(const int32_t *b, uint32_t frames, uint32_t from)   /* frames until 40 dB under the peak */
+{
+    int32_t pk = peak(b + 2u * from, 2048), lim = pk / 100;
+    uint32_t i, last = from;
+    for (i = from; i < frames; i++)
+        if (abs(b[2u * i]) > lim || abs(b[2u * i + 1u]) > lim)
+            last = i;
+    return last - from;
+}
+
 static int same_lr(const int32_t *b, uint32_t frames)
 {
     uint32_t i;
@@ -770,6 +781,7 @@ static void voice(int r16, int r8, int r4, int atk, int rel)
     cur.p[P_LDLY] = 0;
     cur.p[P_FLGA] = 0;
     cur.p[P_DMIX] = 0;
+    cur.p[P_RVMIX] = 0;
     set.g[G_TRIG] = 0;
     snd_update();
 }
@@ -1221,17 +1233,97 @@ static void sound(void)
         check("FX three times: FX 3 (delay mode and sync)", ui.page == PG_FX3);
         host_turn(EN_K1, 1);
         host_turn(EN_K2, 6);
-        host_turn(EN_K3, 5);                              /* an empty row: nothing */
+        host_turn(EN_K3, 35);
+        host_turn(EN_K4, 20);
         host_frame();
         host_png("build/shots/fx3.png");
-        check("FX 3: KNOB 1 DLY MODE, KNOB 2 DLY SYNC; KNOB 3 on an empty row does nothing",
-              cur.p[P_DMODE] == 1 && cur.p[P_DSYNC] == 6);
-        lint("FX 3 with its empty rows");
+        check("FX 3: KNOB 1 DLY MODE, 2 DLY SYNC, 3 REVERB, 4 REV SIZE",
+              cur.p[P_DMODE] == 1 && cur.p[P_DSYNC] == 6 && cur.p[P_RVMIX] == 35 && cur.p[P_RVSIZE] == 70);
+        lint("FX 3");
         tap(B_FX);
         check("FX again: back to FX 1", ui.page == PG_FX1);
         cur.p[P_DMODE] = 0;
         cur.p[P_DSYNC] = 0;
+        cur.p[P_RVMIX] = 0;
+        cur.p[P_RVSIZE] = 50;
         tap(B_HOME);
+    }
+    {   /* the reverb: a tail after a burst, longer for a larger REV SIZE, stereo, exact silence, a stop, no stale tail */
+        static int32_t rv[2u * 6u * FS];
+        uint32_t t20, t80;
+        double c;
+        voice(0, 100, 0, 0, 0);
+        silence();
+        host_render(buf, ONE_S);
+        host_render(buf, 2048);
+        cur.p[P_RVMIX] = 60;
+        cur.p[P_RVSIZE] = 20;
+        snd_update();
+        fm1_in.notes = 1u << 7;
+        host_render(rv, 2048);
+        fm1_in.notes = 0;
+        host_render(rv + 2u * 2048u, 6u * FS / CTL * CTL - 2048u);
+        t20 = tail_time(rv, 6u * FS / CTL * CTL, 4096u);
+        c = corr_lr(rv + 2u * 8192u, 8192);
+        printf("  (reverb: REV SIZE 20 falls 40 dB in %.2f s; L/R correlation of the tail %.2f)\n", t20 / (double)FS, c);
+        check("REVERB: a tail after the note", t20 > FS / 10u);
+        check("REVERB: the tail is stereo (L/R correlation < 0.8)", c < 0.8);
+        check("REVERB: the tail ends in exact silence", peak(rv + 2u * (6u * FS / CTL * CTL - 4096u), 4096) == 0);
+        cur.p[P_RVSIZE] = 80;
+        snd_update();
+        fm1_in.notes = 1u << 7;
+        host_render(rv, 2048);
+        fm1_in.notes = 0;
+        host_render(rv + 2u * 2048u, 6u * FS / CTL * CTL - 2048u);
+        t80 = tail_time(rv, 6u * FS / CTL * CTL, 4096u);
+        printf("  (reverb: REV SIZE 80 falls 40 dB in %.2f s)\n", t80 / (double)FS);
+        check("REV SIZE 80 decays longer than 20 (x 2 at least)", t80 > 2u * t20);
+        fm1_in.notes = 1u << 7;                           /* a stop: silent at once */
+        host_render(buf, 4096);
+        fm1_in.notes = 0;
+        host_render(buf, 2048);
+        app_audio_stop();
+        host_render(buf, 2048);
+        check("app_audio_stop: the reverb silent at once", peak(buf, 2048) == 0);
+        host_render(buf, 8192);                           /* (its quiet pass) */
+        cur.p[P_RVSIZE] = 50;
+        snd_update();
+        fm1_in.notes = 1u << 7;                           /* REVERB to 0, then on again much later: no old tail */
+        host_render(buf, 4096);
+        fm1_in.notes = 0;
+        host_render(buf, 2048);
+        cur.p[P_RVMIX] = 0;
+        snd_update();
+        host_render(rv, 6u * FS / CTL * CTL);
+        host_render(rv, 6u * FS / CTL * CTL);
+        host_render(rv, ONE_S);                           /* 13 s: past its tail */
+        cur.p[P_RVMIX] = 60;
+        snd_update();
+        host_render(buf, 4096);
+        check("REVERB off past its tail, then on: no old sound in it", peak(buf, 4096) == 0 && fxs.rv_tail > 0u);
+        cur.p[P_RVMIX] = 0;                               /* notes played while REVERB is 0 go nowhere near it: just
+                                                           * before it stops running, they would be frozen in its lines */
+        snd_update();
+        host_render(rv, 6u * FS / CTL * CTL);
+        host_render(rv, 5u * FS / CTL * CTL);
+        fm1_in.notes = 1u << 7;
+        host_render(buf, 8192);
+        fm1_in.notes = 0;
+        host_render(rv, 2u * FS / CTL * CTL);             /* (past the 12 s: it stopped) */
+        cur.p[P_RVMIX] = 60;
+        snd_update();
+        host_render(buf, 4096);
+        check("notes played with REVERB at 0 leave nothing in it for later", peak(buf, 4096) == 0);
+        cur.p[P_RVMIX] = 0;
+        snd_update();
+        silence();
+        host_render(buf, ONE_S);
+        host_render(buf, 2048);
+        nrpn_in(91, 8192, 1);                             /* 14-bit: NRPN 0:91 (REVERB) */
+        check("REVERB answers NRPN 0:91 (50 + a fine part)", cur.p[P_RVMIX] == 50 && cur.f[P_RVMIX] <= 2u);
+        cur.p[P_RVMIX] = 0, cur.f[P_RVMIX] = 0;
+        snd_update();
+        voice(0, 100, 0, 0, 0);
     }
     {   /* the delay: a short burst, then its echoes */
         static int32_t big[2u * 3u * FS];
@@ -1247,8 +1339,14 @@ static void sound(void)
         host_render(big, 1024);
         fm1_in.notes = 0;
         host_render(big + 2u * 1024u, 3u * FS / CTL * CTL - 1024u);
-        for (burst_end = 1024; burst_end < d && big[2u * burst_end] != 0; burst_end++)
-            ;
+        for (burst_end = 1024; burst_end < d; burst_end++) {   /* the note's end: 256 silent samples in a row (not a
+                                                                * zero crossing in its release) */
+            uint32_t z = 0;
+            while (z < 256u && big[2u * (burst_end + z)] == 0 && big[2u * (burst_end + z) + 1u] == 0)
+                z++;
+            if (z == 256u)
+                break;
+        }
         for (k = burst_end; k < 3u * FS / CTL * CTL && !first; k++)
             if (big[2u * k] != 0)
                 first = k;
@@ -2130,7 +2228,7 @@ static void midi_control(void)
             ok = 0;
         }
     }
-    check("every CC of the map (42) sets its control across its range", ok && NCC == 42u);
+    check("every CC of the map (44) sets its control across its range", ok && NCC == 44u);
     check("CC 74 / 7 / 106 / 112: cutoff, volume, tempo, aftertouch mode reach their ends",
           cur.p[P_CUT] == 127 && set.g[G_VOL] == 100 && set.bpm == 240u && set.g2[G2_AT] == 3);
     cc_in(109, 127);                                      /* PLAY by CC */
@@ -2196,9 +2294,9 @@ static void midi_control(void)
         host_sysex_in(GET, sizeof GET);
         host_frame();
         host_frame();
-        check("SysEx: get the current sound -> 02 and its body (99 bytes)", sysex_reply(2, &body, &n) && n == SL_BODY && n == 99u);
-        check("SysEx: the body as specified (format 2, the name, 28 parameters)", body[0] == 2u && !memcmp(body + 1, "BRIGHT", 6) &&
-                                                                                body[13] == 28u);
+        check("SysEx: get the current sound -> 02 and its body (111 bytes)", sysex_reply(2, &body, &n) && n == SL_BODY && n == 111u);
+        check("SysEx: the body as specified (format 3, the name, 32 parameters)", body[0] == 3u && !memcmp(body + 1, "BRIGHT", 6) &&
+                                                                                body[13] == 32u);
         check("SysEx: a parameter as two 7-bit bytes (16' 40: 168 = 1, 40)", body[14] == 1u && body[15] == 40u);
         check("SysEx: it decodes back to the sound", !sl_decode(body, n, &p) && !memcmp(p.p, cur.p, sizeof p.p) &&
                                                     str_eq(p.name, cur.name));
@@ -2469,6 +2567,24 @@ static void nrpn(void)
                                                                         user[3].p[P_CUT] == FACTORY[3].p[P_CUT] &&
                                                                         user[3].f[P_CUT] == 0u && str_eq(user[5].name, "BRIGHT"));
     }
+    {   /* a version 2 user record: 16 presets of 68 bytes (28 parameters and 28 fine parts) */
+        static uint8_t raw[4 + 16 * 68];
+        uint32_t i;
+        memset(raw, 0, sizeof raw);
+        raw[0] = 2, raw[1] = 0;
+        raw[2] = (uint8_t)((16 * 68) & 0xFF), raw[3] = (uint8_t)((16 * 68) >> 8);
+        for (i = 0; i < 16u; i++) {
+            memcpy(raw + 4 + i * 68, FACTORY[i].name, NAME_LEN);
+            memcpy(raw + 4 + i * 68 + NAME_LEN, FACTORY[i].p, 28);
+        }
+        memcpy(raw + 4 + 2 * 68, "V2 SOUND", 9);
+        raw[4 + 2 * 68 + NAME_LEN + 28 + P_CUT] = 55;     /* a fine part */
+        store_save(REC_USER0, APP_ID, raw, sizeof raw);
+        power_cycle();
+        check("a version 2 user record: names, parameters, fine parts read; REV SIZE at its default",
+              str_eq(user[2].name, "V2 SOUND") && user[2].f[P_CUT] == 55u && user[2].p[P_CUT] == FACTORY[2].p[P_CUT] &&
+              user[2].p[P_RVSIZE] == SP[P_RVSIZE].def && user[2].p[P_RVMIX] == 0);
+    }
     {   /* SysEx: format 2 carries the fine parts; format 1 is still taken */
         uint8_t f[8 + SL_BODY + 2], b1[SL_BODY1];
         preset_t p = FACTORY[0], q;
@@ -2476,13 +2592,14 @@ static void nrpn(void)
         p.f[P_CUT] = 77;
         len = sl_encode(&p, f);
         check("SysEx format 2: the fine parts there and back", len == SL_BODY && !sl_decode(f, len, &q) && q.f[P_CUT] == 77u);
-        memcpy(b1, f, SL_BODY1 - 1u);                     /* format 1: no fine parts, its own checksum */
+        memcpy(b1, f, SL_BODY1 - 1u);                     /* format 1: 28 parameters, no fine parts, its own checksum */
         b1[0] = 1;
+        b1[1 + NAME_LEN] = 28;
         for (i = 0; i + 1u < SL_BODY1; i++)
             sum += b1[i];
         b1[SL_BODY1 - 1u] = (uint8_t)(sum & 0x7Fu);
-        check("SysEx format 1: still taken (fine parts 0)", !sl_decode(b1, SL_BODY1, &q) && q.f[P_CUT] == 0u &&
-                                                           q.p[P_CUT] == FACTORY[0].p[P_CUT]);
+        check("SysEx format 1: still taken (fine parts 0, REV SIZE at its default)", !sl_decode(b1, SL_BODY1, &q) &&
+              q.f[P_CUT] == 0u && q.p[P_CUT] == FACTORY[0].p[P_CUT] && q.p[P_RVSIZE] == SP[P_RVSIZE].def);
     }
     host_nor_erase();
     power_cycle();

@@ -39,7 +39,8 @@ static const char *const SPK_TOK[][2] = {
     {"SYNC", "sync"},              {"1/2", "half notes"},
     {"1/4.", "dotted quarter notes"}, {"1/4T", "quarter note triplets"},
     {"1/8.", "dotted eighth notes"}, {"1/16.", "dotted sixteenth notes"},
-    {"PLAY", "play"},         {"AT", "aftertouch"},
+    {"PLAY", "play"},
+    {"REV", "reverb"},         {"AT", "aftertouch"},
     {"CC", "C C"},         {"OMNI", "omni"},
 };
 #define NSPK (sizeof SPK_TOK / sizeof SPK_TOK[0])
