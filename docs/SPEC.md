@@ -184,6 +184,7 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
    changes glide like tape, FEEDBACK with DLY TONE's low-pass in the loop, DLY MIX added to the dry; tails end in
    exact silence, a stop silences it at once. Measured: the echo within 0.1 ms of DLY TIME, FEEDBACK 50 % gives
    half the level on the second echo. All three in float on the FPU (fx.c, no soft float).
+   On the unit: F8 SPACE (ensemble, flanger and delay all on) with a big chord peaks at 25 % CPU.
 7. **Presets:** the factory sounds tuned, SAVE to user slots, PRESETS browsing.
 8. **Hold, arpeggiator, chord memory:** latch, the arp with internal tempo and MIDI clock, MIDI note out, chords.
 9. **Polish:** ENVELOPE and FILTER drawings, the CC map in the docs, budgets checked, first install on a unit.
