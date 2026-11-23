@@ -13,7 +13,9 @@
  * sounding count. */
 
 #define NOTE_KEY0 53u            /* note key 0 is F3 (hal/fm1_input.h fm1_in.notes) */
-#define MAX_SOUNDING 32u         /* notes rendered per block at most: held ones first (lowest first), then releasing */
+#define MAX_SOUNDING 48u         /* notes rendered per block at most: held ones first (lowest first), then releasing.
+                                  * Measured on the unit (milestone 2): all 27 keys x 3 registers stay under 20 %
+                                  * CPU, so 48 is ~36 %, room left for the filter and the effects; snd_shed guards */
 #define CAP_MIN 8u               /* the load shedding (snd_shed) never goes below this many */
 #define GATE_ONE 1024            /* a key gate fully open */
 #define GATE_STEP 256            /* per block (32 frames): 4 blocks, ~2.9 ms, from shut to open */

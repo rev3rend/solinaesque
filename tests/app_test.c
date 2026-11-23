@@ -709,7 +709,7 @@ static void sound(void)
     audio_cpu_q8 = 100;                                 /* ~39 % */
     frames(17);
     check("load < 60 %: the cap climbs back slowly (1 per 250 ms)", vox.cap == CAP_MIN + 1u);
-    frames(450);
+    frames(700);                                        /* (MAX_SOUNDING - CAP_MIN steps of 250 ms) */
     check("load < 60 %: back up to MAX_SOUNDING", vox.cap == MAX_SOUNDING);
     audio_cpu_q8 = 180;                                 /* 70 %: between, nothing moves */
     vox.cap = 20;

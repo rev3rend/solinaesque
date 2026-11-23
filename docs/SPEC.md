@@ -97,8 +97,8 @@ the panel of a 1970s string machine. Every screen is drawn lazily (a signature p
   feedback path). The delay uses about 176 KB of pool for 1 s stereo; the ensemble and flanger a few KB.
 - **Level:** a soft limiter on the output so full chords at full registers do not clip.
 - **Ceiling:** the number of sounding notes is limited by the audio ISR budget (measured; the target is at least 32
-  notes × 3 registers, the oldest releasing notes are dropped first). The skeleton renders at most 32 notes per block,
-  lowest first.
+  notes × 3 registers, the oldest releasing notes are dropped first). At most 48 notes are rendered per block (held
+  first, lowest first): the unit measured under 20 % CPU with all 27 keys × 3 registers.
 - **Load shedding:** the main loop watches the audio ISR's load (`audio_cpu_q8`): above 80 % the number of notes
   rendered falls 2 a frame (never below 8), under 60 % it climbs back 1 every 250 ms. Held notes render first, a
   releasing note past the cap is dropped. HOME shows the load (`CPU nn%`, in the accent while shedding).
@@ -164,9 +164,9 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
    and user preset records with defaults, the divide-down bank with naive saws in all three registers through the
    shared ADSR (RETRIG / LEGATO), HOLD, MIDI notes on a channel, sustain pedal, all notes off, note-off rules and
    `app_audio_stop`; SHAPE, FILTER, LFO, FX, ARP, PLAY and REC say `SOON`.
-2. **Divide-down bank (done but the measurement):** PolyBLEP saws, the SHAPE morph, load shedding with held notes
-   first and releasing notes dropped first, CPU % on HOME. Left: read the CPU % on the unit with big chords and set
-   MAX_SOUNDING from it.
+2. **Divide-down bank (done, on the unit):** PolyBLEP saws, the SHAPE morph, load shedding with held notes first
+   and releasing notes dropped first, CPU % on HOME. Measured on the FM-1: all 27 keys × 3 registers never above
+   20 % CPU; MAX_SOUNDING raised from 32 to 48.
 3. **Shared filter and envelope:** the state-variable filter, ADSR with RETRIG / LEGATO, key tracking, the limiter.
 4. **LFO and MIDI in completed:** vibrato, PWM, delay; pitch bend, mod wheel, sustain, the CC map.
 5. **Ensemble:** the three-phase chorus and its types on ALGORITHM.
