@@ -34,7 +34,7 @@ static struct {
     uint8_t held_fired[NB];      /* its hold already acted (no tap on release) */
     char msg[40];
     uint32_t msg_until;
-    uint32_t sig[4];             /* the drawn areas' signatures */
+    uint32_t sig[5];             /* the drawn areas' signatures */
     uint8_t drawn_page;          /* the page (or SAVE) the screen shows: a change draws everything */
     uint32_t frames;
 } ui;
@@ -238,16 +238,20 @@ static void draw_page_head(void)
     cv_blit(0, 0);
 }
 
-static void draw_page_rows(uint32_t r0)          /* two rows (r0, r0 + 1), 44 px each */
+static int page_drawn(void) { return ui.page == PG_ENV || ui.page == PG_FLT; }   /* the pages with a drawing */
+#define ROW_H (page_drawn() ? 32 : 44)            /* a row: 44 px, or 32 to leave room for the drawing */
+
+static void draw_page_rows(uint32_t r0)          /* two rows (r0, r0 + 1) */
 {
     uint32_t r, page_live = 0;
     int8_t *v;
+    const int32_t rh = ROW_H, bar = rh == 44 ? 28 : 24, bh = rh == 44 ? 6 : 4;
     for (r = 0; r < 4u; r++)
         page_live |= row_param(ui.page, r, &v)->live;
-    cv_begin(240, 88, T_BG);
+    cv_begin(240, 2u * (uint32_t)rh, T_BG);
     for (r = r0; r < r0 + 2u; r++) {
         const param_t *p = row_param(ui.page, r, &v);
-        int32_t y = (int32_t)(r - r0) * 44, x;
+        int32_t y = (int32_t)(r - r0) * rh, x;
         char b[20], k[8];
         str_cpy(k, "K", sizeof k);
         fmt_int(b, (int32_t)r + 1);
@@ -258,11 +262,104 @@ static void draw_page_rows(uint32_t r0)          /* two rows (r0, r0 + 1), 44 px
             cv_text(x + 8, y + 6, &AF_S, "SOON", T_ACCENT);
         pv_text(b, sizeof b, p, *v);
         cv_text_r(230, y + 4, &AF_M, b, p->live ? T_THEME : T_MID, T_BG);
-        draw_bar_h(34, y + 28, 196, 6, *v - (p->kind == K_BIP || p->kind == K_TUNE ? 0 : p->lo),
+        draw_bar_h(34, y + bar, 196, bh, *v - (p->kind == K_BIP || p->kind == K_TUNE ? 0 : p->lo),
                    p->kind == K_BIP || p->kind == K_TUNE ? p->hi : p->hi - p->lo,
                    p->kind == K_BIP || p->kind == K_TUNE);
     }
-    cv_blit(0, 32u + r0 * 44u);
+    cv_blit(0, 32u + r0 * (uint32_t)rh);
+}
+
+/* ------------------------------------------------------------ the drawings (ENVELOPE, FILTER) --- */
+#define CURVE_Y 162u             /* the drawing's strip: 50 px under the four compact rows, over the footer */
+#define CURVE_H 50
+#define CURVE_X0 10
+#define CURVE_W 220
+
+/* ENVELOPE: the ADSR's shape. The widths follow the knobs' positions (the times span 1 ms .. 10 s: a width per
+ * second would hide the short ones), the plateau's height is SUSTAIN, decay and release fall as the sound does:
+ * exponentially, ~52 dB down at their time (sound.c), drawn in 8 segments. */
+static void draw_env_curve(void)
+{
+    static const uint8_t EXPO[9] = {255, 121, 57, 27, 13, 6, 3, 1, 0};   /* 256 x e^(-0.75 i): 8 steps to ~0 */
+    const int32_t top = 4, h = 42, sus = cur.p[P_SUS] * 256 / 100;
+    int32_t x = CURVE_X0, aw = 6 + cur.p[P_ATK] * 50 / 127, dw = 6 + cur.p[P_DEC] * 50 / 127, sw = 40,
+            rw = 6 + cur.p[P_REL] * 60 / 127, i, px, py;
+#define LVL_Y(l) (top + h - (l) * h / 256)
+    cv_begin(240, CURVE_H, T_BG);
+    cv_rect(CURVE_X0, top + h, CURVE_W, 1, T_LINE);
+    cv_line_t(x, LVL_Y(0), x + aw, LVL_Y(256), T_THEME, 2);
+    x += aw;
+    for (px = x, py = LVL_Y(256), i = 1; i <= 8; i++) {
+        int32_t nx = x + dw * i / 8, ny = LVL_Y(sus + (256 - sus) * EXPO[i] / 256);
+        cv_line_t(px, py, nx, ny, T_THEME, 2);
+        px = nx;
+        py = ny;
+    }
+    x += dw;
+    cv_line_t(x, LVL_Y(sus), x + sw, LVL_Y(sus), T_THEME, 2);
+    x += sw;
+    for (px = x, py = LVL_Y(sus), i = 1; i <= 8; i++) {
+        int32_t nx = x + rw * i / 8, ny = LVL_Y(sus * EXPO[i] / 256);
+        cv_line_t(px, py, nx, ny, T_THEME, 2);
+        px = nx;
+        py = ny;
+    }
+#undef LVL_Y
+    cv_blit(0, CURVE_Y);
+}
+
+/* log2(v) x 256 for v >= 1 (the leading bit and the next 8: within 0.09, enough to draw with) */
+static int32_t log2_q8(uint32_t v)
+{
+    int32_t e = 31 - __builtin_clz(v);
+    return e * 256 + (int32_t)(((v << (31 - e)) >> 23) & 0xFFu);
+}
+
+/* FILTER: the low-pass's response, |H|^2 = 1 / ((1 - r^2)^2 + k^2 r^2) with r = f / fc and k the damping, across
+ * 20 Hz .. 16 kHz on CUTOFF's own log scale (a step: 1/13.2 octave), +24 dB at the top, -36 at the bottom, 0 dB
+ * dotted. Integer only (the main loop runs without a float library): r^2 by repeated multiplication, a 32-bit
+ * divide, log2 by the leading bit. The base CUTOFF (the envelope and key tracking move it while playing). */
+static void draw_flt_curve(void)
+{
+    const int32_t top = 2, h = 46, cut = cur.p[P_CUT];
+    const uint32_t k = 131072u - 128451u * (uint32_t)cur.p[P_RES] / 100u;   /* damping, Q16: 2 .. 0.04 */
+    const uint64_t k2 = (uint64_t)k * k >> 16;
+    int32_t x, px = -1, py = 0, y0 = top + 24 * h / 60;
+    cv_begin(240, CURVE_H, T_BG);
+    for (x = 0; x < CURVE_W; x += 4)
+        cv_rect(CURVE_X0 + x, y0, 2, 1, T_LINE);
+    cv_rect(CURVE_X0 + cut * (CURVE_W - 1) / 127, top, 1, h, T_DIM);
+    for (x = 0; x < CURVE_W; x++) {
+        int32_t u = x * 127 / (CURVE_W - 1) - cut, i, y;
+        uint64_t r2 = 65536u, den;
+        uint32_t step = u >= 0 ? 72809u : 58989u;           /* 1.054045^2 or its inverse, Q16: r^2 a step */
+        for (i = 0; i < (u < 0 ? -u : u) && r2 < (1ull << 32); i++)
+            r2 = r2 * step >> 16;
+        den = ((r2 > 65536u ? r2 - 65536u : 65536u - r2) * (r2 > 65536u ? r2 - 65536u : 65536u - r2) >> 16) +
+              (k2 * r2 >> 16);
+        if (den >= 0xFFFFFFFFull || !den)
+            y = top + h;
+        else {
+            /* 10 log10 = 3.0103 log2 ~ 3 + 3/256 (written so: (l - 4096) x 771 folds into a constant that reads as a
+             * ROM address, 0xFFCFD000, and the build's check refuses it) */
+            int32_t d = log2_q8(0xFFFFFFFFu / (uint32_t)den) - 16 * 256, db_q8 = d * 3 + (d * 3 >> 8);
+            y = top + (24 * 256 - db_q8) * h / (60 * 256);
+            y = y < top ? top : y > top + h ? top + h : y;
+        }
+        if (px >= 0)
+            cv_line_t(CURVE_X0 + px, py, CURVE_X0 + x, y, T_THEME, 2);
+        px = x;
+        py = y;
+    }
+    cv_blit(0, CURVE_Y);
+}
+
+static uint32_t curve_sig(uint32_t h)            /* what the drawing shows */
+{
+    if (ui.page == PG_ENV)
+        return fnv(fnv(fnv(fnv(h, (uint32_t)cur.p[P_ATK]), (uint32_t)cur.p[P_DEC]), (uint32_t)cur.p[P_SUS]),
+                   (uint32_t)cur.p[P_REL]);
+    return fnv(fnv(h, (uint32_t)cur.p[P_CUT]), (uint32_t)cur.p[P_RES]);
 }
 
 static void arp_foot(char *b, unsigned max)      /* the ARP page's footer: the clock and the transport */
@@ -357,7 +454,7 @@ static uint32_t sig_preset(uint32_t h)
 
 static void ui_draw(void)
 {
-    uint32_t screen = ui.saving ? 0xFEu : ui.page, s[4], i, all = app_redraw || screen != ui.drawn_page;
+    uint32_t screen = ui.saving ? 0xFEu : ui.page, s[5] = {0, 0, 0, 0, 0}, i, all = app_redraw || screen != ui.drawn_page;
     uint32_t h0 = 2166136261u, m = fnv_s(h0, bottom_text());
     if (all) {
         app_redraw = 0;
@@ -400,8 +497,17 @@ static void ui_draw(void)
             draw_page_rows(2);
         if (all || s[3] != ui.sig[3])
             draw_foot();
+        if (page_drawn()) {
+            s[4] = curve_sig(fnv(h0, ui.page));
+            if (all || s[4] != ui.sig[4]) {
+                if (ui.page == PG_ENV)
+                    draw_env_curve();
+                else
+                    draw_flt_curve();
+            }
+        }
     }
-    for (i = 0; i < 4u; i++)
+    for (i = 0; i < 5u; i++)
         ui.sig[i] = s[i];
 }
 

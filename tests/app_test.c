@@ -79,6 +79,46 @@ static void lint(const char *what)
     host_clipped = 0;
 }
 
+static uint32_t fb_hash(uint32_t y0, uint32_t y1)       /* the pixels of rows y0..y1 */
+{
+    uint32_t h = 2166136261u, i;
+    for (i = y0 * 240u; i < y1 * 240u; i++)
+        h = (h ^ host_fb[i]) * 16777619u;
+    return h;
+}
+
+static uint32_t theme_rows(uint32_t y0, uint32_t y1)    /* rows holding the theme colour */
+{
+    uint32_t x, y, n = 0;
+    for (y = y0; y < y1; y++)
+        for (x = 0; x < 240u; x++)
+            if (host_fb[y * 240u + x] == T_THEME) {
+                n++;
+                break;
+            }
+    return n;
+}
+
+static int32_t column_y(uint32_t x, uint32_t y0, uint32_t y1)   /* the topmost theme pixel in a column */
+{
+    uint32_t y;
+    for (y = y0; y < y1; y++)
+        if (host_fb[y * 240u + x] == T_THEME)
+            return (int32_t)y;
+    return (int32_t)y1;
+}
+
+static int32_t curve_top(uint32_t y0, uint32_t y1)      /* the highest point of the drawing */
+{
+    uint32_t x;
+    int32_t t = (int32_t)y1;
+    for (x = 0; x < 240u; x++) {
+        int32_t y = column_y(x, y0, y1);
+        t = y < t ? y : t;
+    }
+    return t;
+}
+
 static void screens(void)
 {
     static const struct { uint32_t button; uint8_t page; const char *shot; } OPEN[] = {
@@ -157,6 +197,44 @@ static void screens(void)
         check("values: 0.05 Hz, 20.0 Hz, 9.99 s, 20 Hz, +12 ct, OMNI", good);
     }
 
+    {   /* the drawings: ENVELOPE's ADSR, FILTER's response (in the strip at y 162 .. 212, drawn in T_THEME) */
+        uint32_t h0, h1;
+        int32_t top0, top90, lo120, lo60;
+        tap(B_ENV);
+        host_frame();
+        h0 = fb_hash(162, 212);
+        check("ENVELOPE: the ADSR drawn", theme_rows(162, 212) > 20u);
+        host_turn(EN_K4, 20);                                   /* RELEASE longer */
+        host_frame();
+        h1 = fb_hash(162, 212);
+        check("ENVELOPE: a knob turned redraws its rows and the drawing (2 blits), the shape changes",
+              host_blits == 2u && h1 != h0);
+        host_frame();
+        check("ENVELOPE: nothing changed, nothing drawn", host_blits == 0u);
+        host_turn(EN_K4, -20);
+        tap(B_SCL);
+        cur.p[P_CUT] = 90;
+        cur.p[P_RES] = 0;
+        host_frame();
+        top0 = curve_top(162, 212);
+        cur.p[P_RES] = 90;
+        host_frame();
+        top90 = curve_top(162, 212);
+        host_png("build/shots/filter_res.png");
+        printf("  (the FILTER curve's peak: y %d at RESONANCE 0, y %d at 90; 0 dB is y %d)\n", top0, top90, 162 + 2 + 24 * 46 / 60);
+        check("FILTER: RESONANCE 90 % draws a peak above 0 dB", top90 < top0 && top90 < 162 + 2 + 24 * 46 / 60);
+        cur.p[P_RES] = 0;
+        cur.p[P_CUT] = 120;
+        host_frame();
+        lo120 = column_y(CURVE_X0 + 210, 162, 212);
+        cur.p[P_CUT] = 60;
+        host_frame();
+        lo60 = column_y(CURVE_X0 + 210, 162, 212);
+        check("FILTER: a lower CUTOFF pulls the top end down", lo60 > lo120);
+        cur.p[P_CUT] = FACTORY[0].p[P_CUT];
+        cur.p[P_RES] = FACTORY[0].p[P_RES];
+        tap(B_HOME);
+    }
     memset(host_fb, 0, sizeof host_fb);             /* the platform drew over the screen (UBOOT countdown) */
     app_redraw = 1;
     host_frame();

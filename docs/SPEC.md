@@ -61,7 +61,7 @@ the panel of a 1970s string machine. Every screen is drawn lazily (a signature p
 
 - Title at the top with the page's position (e.g. `ENVELOPE 3/8`).
 - Four rows, one per knob: name, value (with unit where it has one: ms, Hz, %, semitones) and a horizontal bar.
-- ENVELOPE also draws the ADSR shape; FILTER a small response curve (milestone, a plain bar first).
+- ENVELOPE and FILTER use compact rows (32 px) and draw, under them, the ADSR's shape and the filter's response.
 
 ### SAVE
 
@@ -211,4 +211,7 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
    SAVE held for INIT. Tuning the factory sounds by ear on the unit stays open.
 8. **Hold, arpeggiator, chord memory (done):** HOLD (milestone 1), the arp with its five modes, internal tempo and
    MIDI clock, PLAY and MIDI start / stop / continue, chord memory (one chord, stored), MIDI note out over USB.
-9. **Polish:** ENVELOPE and FILTER drawings, the CC map in the docs, budgets checked, first install on a unit.
+9. **Polish (done):** the ENVELOPE page draws the ADSR (widths by the knobs, decay and release as they sound), the
+   FILTER page the low-pass's response (log frequency, +24..−36 dB, the resonance peak, integer maths), both on
+   compact rows; the CC map in the spec; budgets checked (image 85 KB of 582, RAM 9.2 KB of 50, pool 252 KB of
+   382); the README describes the instrument; installed and played on the unit through every milestone.
