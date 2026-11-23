@@ -1741,6 +1741,200 @@ static void sequencer(void)
     power_cycle();
 }
 
+/* ---------------------------------------------------------------- the screen reader (fm1-reader) --- */
+static uint32_t rd_pos;                                  /* how far host_sx_out has been read */
+static char rd_text[16][200];
+static uint8_t rd_flags[16], rd_cmd[16];
+static uint32_t rd_n, rd_bad;                            /* frames read; texts breaking the wording rules */
+
+static void rd_take(void)                                /* the frames sent since the last call */
+{
+    rd_n = 0;
+    while (rd_pos < host_sx_out_len) {
+        uint32_t a = rd_pos, b = a, k = 0, i;
+        while (b < host_sx_out_len && host_sx_out[b] != 0xF7)
+            b++;
+        rd_pos = b + 1u;
+        if (rd_n >= 16u || host_sx_out[a] != 0xF0 || b - a < 6u)
+            continue;
+        rd_cmd[rd_n] = host_sx_out[a + 4u];
+        rd_flags[rd_n] = host_sx_out[a + 5u];
+        for (i = a + 6u; i < b && k + 1u < sizeof rd_text[0]; i++)
+            rd_text[rd_n][k++] = host_sx_out[i] ? (char)host_sx_out[i] : '|';   /* (the HELLO's 00 shown as |) */
+        rd_text[rd_n][k] = 0;
+        if (rd_cmd[rd_n] == 16u) {                       /* a SAY: ASCII, <= 160, none of the symbols RULES.md bars */
+            const char *t = rd_text[rd_n];
+            int bad = k > 160u || !k;
+            for (i = 0; t[i]; i++)
+                bad |= t[i] < 32 || t[i] > 126 || str_len("/|><*_=#[]{}~^@&$") != str_len("/|><*_=#[]{}~^@&$") ||
+                       (t[i] == '/' || t[i] == '|' || t[i] == '>' || t[i] == '<' || t[i] == '*' || t[i] == '_' ||
+                        t[i] == '=' || t[i] == '#' || t[i] == '[' || t[i] == ']' || t[i] == '{' || t[i] == '}' ||
+                        t[i] == '~' || t[i] == '^' || t[i] == '@' || t[i] == '&' || t[i] == '$' || t[i] == '+');
+            if (bad) {
+                printf("  (against the rules: \"%s\")\n", t);
+                rd_bad++;
+            }
+        }
+        rd_n++;
+    }
+}
+
+static int rd_has(const char *start, uint32_t flags)     /* a SAY beginning so, with those flags, was among them */
+{
+    uint32_t i;
+    for (i = 0; i < rd_n; i++)
+        if (rd_cmd[i] == 16u && rd_flags[i] == flags && !strncmp(rd_text[i], start, strlen(start)))
+            return 1;
+    return 0;
+}
+
+static void rd_frames(uint32_t n)                        /* frames, collecting what was said */
+{
+    static char all[16][200];
+    static uint8_t af[16], ac[16];
+    uint32_t got = 0, i;
+    while (n--) {
+        host_frame();
+        rd_take();
+        for (i = 0; i < rd_n && got < 16u; i++, got++) {
+            memcpy(all[got], rd_text[i], sizeof all[0]);
+            af[got] = rd_flags[i];
+            ac[got] = rd_cmd[i];
+        }
+    }
+    for (i = 0; i < got; i++) {
+        memcpy(rd_text[i], all[i], sizeof all[0]);
+        rd_flags[i] = af[i];
+        rd_cmd[i] = ac[i];
+    }
+    rd_n = got;
+}
+
+static void rd_hello(void)
+{
+    static const uint8_t HELLO[] = {0x7D, 0x53, 0x52, 0x01, 0x01};
+    host_sysex_in(HELLO, sizeof HELLO);
+}
+
+static void reader(void)
+{
+    static const uint8_t BYE[] = {0x7D, 0x53, 0x52, 0x02}, WHERE[] = {0x7D, 0x53, 0x52, 0x03},
+                         UPDATE[] = {0x00, 0x59, 0x11, 0x00, 0x00, 0x00, 0x00};
+    static const uint8_t ANSWER[] = {0xF0, 0x7D, 0x53, 0x52, 0x01, 0x01, 'S', 'O', 'L', 'I', 'N', 'A', 'E', 'S',
+                                     'Q', 'U', 'E', ' ', '0', '.', '1', 0x00, 0xF7};
+    uint32_t i, says;
+    host_nor_erase();
+    power_cycle();
+    host_sx_out_len = rd_pos = 0;
+    host_turn(EN_K1, 3);
+    tap(B_ENV);
+    frames(20);
+    check("reader: silent until a HELLO (nothing sent)", host_sx_out_len == 0u);
+    host_sysex_in(UPDATE, sizeof UPDATE);                 /* the update protocol's frame: not the app's */
+    host_frame();
+    check("reader: another SysEx frame is left for the update entry", host_sx_ready && host_sx_out_len == 0u);
+    host_sx_ready = 0;
+    tap(B_HOME);
+    rd_hello();
+    host_frame();
+    check("reader: HELLO answered, byte for byte (F0 7D 53 52 01 01 SOLINAESQUE 0.1 00 F7)",
+          host_sx_out_len >= sizeof ANSWER && !memcmp(host_sx_out, ANSWER, sizeof ANSWER) && !host_sx_ready);
+    rd_frames(10);
+    printf("  (HELLO, then: \"%s\" ...)\n", rd_n > 1u ? rd_text[1] : "");
+    check("reader: a new reader hears the whole screen (HOME: the preset, edited, the drawbars, the mode)",
+          rd_has("home. factory 1, classic, edited. 16 foot 60 percent", SR_NOW) && strstr(rd_text[1], "retrigger") != 0);
+
+    tap(B_ENV);
+    rd_frames(20);
+    check("reader: a page: its name and four values", rd_has("envelope page. attack", SR_NOW));
+    host_turn(EN_K1, 2);
+    rd_frames(2);
+    check("reader: a knob: nothing while it is still moving", rd_n == 0u);
+    rd_frames(10);
+    printf("  (knob: \"%s\")\n", rd_n ? rd_text[0] : "");
+    check("reader: a knob: name and value once it settles", rd_n == 1u && rd_has("attack ", SR_NOW) &&
+                                                          strstr(rd_text[0], "milliseconds") != 0);
+    for (says = 0, i = 0; i < 70u; i++) {                 /* turning for 1.1 s: said every ~half second meanwhile */
+        host_turn(EN_K1, (i & 1u) ? 1 : -1);
+        rd_frames(1);
+        says += rd_n;
+    }
+    printf("  (turning for 1.1 s: said %u times)\n", says);
+    check("reader: a knob turned for 1.1 s: said every ~half second meanwhile (2)", says == 2u);
+    rd_frames(20);
+    rd_hello();
+    tap(B_SEQ);
+    rd_frames(2);
+    check("reader: a message: \"hold on\"", rd_has("hold on", SR_NOW));
+    tap(B_SEQ);
+    rd_frames(20);
+    tap(B_HOME);
+    rd_frames(30);
+    host_turn(EN_PRESET, 2);
+    rd_frames(20);
+    check("reader: a preset: \"factory 3, violins\"", rd_has("factory 3, violins", SR_NOW));
+    host_turn(EN_ALGO, 1);
+    rd_frames(5);
+    check("reader: ALGORITHM: \"ensemble 3\"", rd_has("ensemble 3", SR_NOW));
+
+    rd_hello();
+    tap(B_SAVE);                                          /* SAVE: the screen, then each edit */
+    rd_frames(30);
+    check("reader: SAVE: the slot, the source, the name, how to edit", rd_has("save to user 1, now holding init.", SR_NOW));
+    host_turn(EN_K4, 1);
+    rd_frames(12);
+    check("reader: SAVE: KNOB 4 -> \"name empty\"", rd_has("name empty", SR_NOW));
+    host_turn(EN_K2, 3);
+    rd_frames(12);
+    check("reader: SAVE: a letter -> \"position 1, letter C\"", rd_has("position 1, letter C", SR_NOW));
+    host_turn(EN_ALGO, 3);
+    rd_frames(12);
+    check("reader: SAVE: ALGORITHM -> \"from factory 3, violins. name violins\"", rd_has("from factory 3, violins. name violins", SR_NOW));
+    flash_ok = 0;
+    tap(B_SAVE);
+    rd_frames(4);
+    check("reader: SAVE FAILED: a warning (NOW + KEEP)", rd_has("save failed", SR_NOW | SR_KEEP));
+    flash_ok = 1;
+    rd_frames(30);
+
+    for (i = 0; i < NPAGES; i++) {                        /* WHERE on every page: the whole page, within the rules */
+        rd_hello();
+        ui.page = (uint8_t)i;
+        rd_frames(30);
+        host_sysex_in(WHERE, sizeof WHERE);
+        rd_frames(4);
+        if (!rd_has(i == PG_FX1 ? "effects 1" : i == PG_FX2 ? "effects 2" : i == PG_ARP ? "arpeggiator page" : "", SR_NOW)) {
+            printf("  (WHERE on page %u: nothing)\n", i);
+            rd_bad++;
+        }
+    }
+    tap(B_HOME);
+    rd_frames(30);
+    check("reader: every text ASCII, <= 160 characters, none of the symbols RULES.md bars", rd_bad == 0u);
+
+    host_sx_room = 0;                                     /* the USB queue full: dropped, nothing waits */
+    {
+        uint32_t d0 = sr.dropped, len0 = host_sx_out_len;
+        host_turn(EN_K1, 1);
+        frames(20);
+        check("reader: the USB queue full: the message dropped, nothing sent, no wait", host_sx_out_len == len0 && sr.dropped > d0);
+    }
+    host_sx_room = 64;
+    rd_frames(20);
+    host_sysex_in(BYE, sizeof BYE);
+    rd_frames(2);
+    host_turn(EN_K1, 1);
+    rd_frames(20);
+    check("reader: BYE: silent again", rd_n == 0u && !sr_on());
+    rd_hello();
+    rd_frames(3);
+    check("reader: HELLO after BYE: the whole screen again", rd_has("home.", SR_NOW));
+    frames(5000u / 16u + 10u);                            /* no HELLO for 5 s: gone */
+    check("reader: no HELLO for 5 s: silent", !sr_on());
+    host_sx_out_len = rd_pos = 0;
+    power_cycle();
+}
+
 int main(void)
 {
     if (system("mkdir -p build/shots"))
@@ -1750,6 +1944,7 @@ int main(void)
     persistence();
     presets();
     sequencer();
+    reader();
     sound();
     puts(failed ? "APP TEST FAILED" : "app test passed");
     return failed ? 1 : 0;

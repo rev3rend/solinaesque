@@ -187,6 +187,8 @@ static void fm1_main(void)
         }
         uboot_hold();
 #if FELUCCA_OTA
+        app_sysex();                            /* the app's own SysEx first (Solinaesque: fm1-reader); it leaves the
+                                                 * update protocol's frames for ota_service */
         ota_service();                          /* M-UPGRADE handshake: the identity */
         if (usb.ota_req) {                      /* M-UPGRADE upgrade command */
             usb.ota_req = 0;

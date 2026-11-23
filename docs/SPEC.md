@@ -178,6 +178,35 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
 - MIDI clock out, SysEx preset transfer.
 - Per-note filters or envelopes (it is paraphonic by design).
 
+## Version 2 features (planned 2026-11-22, built in this order)
+
+10. **Accessibility (fm1-reader) (done):** the FM-1 speaks through the fm1-reader screen reader
+    (https://github.com/charlesvestal/fm1-reader, protocol version 1): USB-MIDI SysEx `F0 7D 53 52 <cmd> ... F7`;
+    silent until a reader's HELLO (every 2 s; silent again 5 s after the last, or on BYE); the HELLO answer names the
+    firmware ("SOLINAESQUE 0.1", an empty words link: the device speaks in full words); SAY messages (ASCII, at most
+    160 characters here: the platform's SysEx queue holds 64 packets) with NOW for what the player caused and KEEP
+    for warnings; WHERE (and the first HELLO) reads the whole screen. What is said: page changes with their four
+    values, knob turns as "name value" (after 120 ms still, at least every ~500 ms while turning), presets, the
+    messages (HOLD, the arp, chords, octave, saves), the SAVE screen and its name editing. Wording per fm1-reader's
+    RULES.md: full words, no symbols, the important thing first. Never blocks: a message that does not fit the USB
+    queue is dropped. Speech on the computer only (no sounds from the FM-1).
+    Built: `sr.c` (the protocol; a readout longer than one SAY goes out in parts as the queue has room) and `speak.c`
+    (what changed, spoken); the platform's main loop calls the app's new `app_sysex()` hook before the update entry,
+    which takes only frames starting 7D 53 52 and leaves the update protocol's to `ota_service`. Tested: the HELLO
+    answer byte for byte, silence before HELLO and after BYE / 5 s, every page's readout within the rules,
+    debouncing, warnings, a full queue, and the update frames left alone.
+11. **Full MIDI control:** a CC for every parameter (sound, effects, LFO, arp, global), Program Change for presets,
+    both received and sent (a knob turned sends its CC, a preset change its Program Change), and a SysEx dump of a
+    preset (send and receive).
+12. **Velocity and aftertouch** (MIDI only; the keys have none), switchable: velocity to nothing (organ), note level,
+    filter envelope, or both; aftertouch (channel and polyphonic) to vibrato, cutoff, or both. Settings on a second
+    GLOBAL page.
+13. **Ping-pong delay and MIDI clock out:** a delay mode (stereo / ping-pong); clock out at the internal tempo while
+    the arp runs.
+14. **Reverb** after the delay (size, damping, mix), its CPU measured on the unit.
+15. **Brass section** (ARP Omni style): a second voicing with its own registers, filter and envelope, layered on
+    the strings.
+
 ## Milestones
 
 1. **Skeleton (done, 0.1):** every control from the table wired to a visible effect, all screens drawn, the settings

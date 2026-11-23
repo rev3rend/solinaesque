@@ -31,6 +31,7 @@ When you add code ported from elsewhere, keep its licence header and add a row b
 | What | Licence | Where |
 | --- | --- | --- |
 | Inter Tight font by The Inter Project Authors: the UI text, rasterised into the firmware at build time (`tools/gen_aa_font.py`; the generated tables are not offered as a font, and the font declares no Reserved Font Name) | SIL OFL 1.1 | `assets/fonts/InterTight[wght].ttf`, `LICENSES/OFL-InterTight.txt` (also `assets/fonts/OFL.txt`) |
+| The fm1-reader screen-reader protocol by charlesvestal (<https://github.com/charlesvestal/fm1-reader>, version 1): `firmware/app/sr.c` implements it, written from its PROTOCOL.md (no code copied; the reference `announce.c` is MPL-2.0) | protocol: MIT repository | `firmware/app/sr.c`, `speak.c` |
 | X0X by charlesvestal (<https://github.com/charlesvestal/fm1-x0x>), a Felucca fork: the design of the browser emulator (the worklet, the device clock driven by its audio); its files credit it in their headers | GPL-3.0 | `web/emu/` |
 | graphify by Safi Shamsi and the Graphify contributors (<https://github.com/Graphify-Labs/graphify>): its Claude Code skill (a development aid for Claude's code graph: CLAUDE.md; nothing of it is in the firmware or the web pages) | Apache-2.0 (parts also MIT) | `.claude/skills/graphify/` (with its `LICENSE`, `LICENSE-MIT` and `NOTICE`) |
 | JieLi AC79 SDK by JieLi Technology: three of its files go into every `.fwsc` package (below); none are in this tree | Apache-2.0 | `LICENSES/Apache-2.0.txt` |

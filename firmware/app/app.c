@@ -7,7 +7,9 @@
  *   fx.c      the effects (audio ISR, on the FPU): ensemble, flanger, delay
  *   seq.c     notes before they sound (audio ISR): chord memory, the arpeggiator and its clock, MIDI out
  *   sound.c   the audio ISR: the divide-down oscillator bank, the registers, the key gates, the shared envelope
- *   ui.c      the panel: controls, LEDs, the HOME, page and SAVE screens */
+ *   sr.c      the screen reader link (fm1-reader protocol): SysEx in and out, never blocking
+ *   ui.c      the panel: controls, LEDs, the HOME, page and SAVE screens
+ *   speak.c   what the screen reader says: what changed on the screen, in full words */
 #ifndef APP_NAME
 #define APP_NAME "SOLINAESQUE"
 #endif
@@ -21,7 +23,9 @@
 #include "fx.c"
 #include "seq.c"
 #include "sound.c"
+#include "sr.c"
 #include "ui.c"
+#include "speak.c"
 
 static void app_init(void)
 {
@@ -32,6 +36,12 @@ static void app_init(void)
     ui_draw();
 }
 
-static void app_frame(void) { ui_frame(); }
+static void app_frame(void)
+{
+    ui_frame();
+    speak_frame();                               /* (speak.c: what changed, to a listening screen reader) */
+}
+
+static void app_sysex(void) { sr_sysex(); }      /* the reader's frames; the rest stays for the update entry */
 
 static const char *app_fault_name(void) { return APP_NAME " CRASH"; }

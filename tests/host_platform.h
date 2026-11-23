@@ -154,6 +154,38 @@ static int st_prog(uint32_t off, const void *src, uint32_t n)
 static void host_nor_erase(void) { memset(nor, 0xFF, sizeof nor); }
 #include "store.c"
 
+/* ------------------------------------------------------------ SysEx (FELUCCA_OTA is 0 here) --- */
+/* the update path's three calls, as plain state: host_sysex_in() puts a frame (the bytes between F0 and F7) where
+ * ota_frame_get finds it; ota_wire_send appends what the app sends (F0..F7) to host_sx_out; host_sx_room is the
+ * room the USB queue would have, in 3-byte packets (the target's SXQ: 64) */
+static uint8_t host_sx_in[640], host_sx_out[8192];
+static uint32_t host_sx_in_len, host_sx_out_len, host_sx_frames, host_sx_room = 64u;
+static uint8_t host_sx_ready;
+static int ota_frame_get(const uint8_t **p, uint32_t *n)
+{
+    if (!host_sx_ready)
+        return 0;
+    *p = host_sx_in;
+    *n = host_sx_in_len;
+    return 1;
+}
+static void ota_frame_done(void) { host_sx_ready = 0; }
+static int ota_wire_send(const uint8_t *p, uint32_t n)
+{
+    if (host_sx_out_len + n > sizeof host_sx_out)
+        return -1;
+    memcpy(host_sx_out + host_sx_out_len, p, n);
+    host_sx_out_len += n;
+    host_sx_frames++;
+    return 0;
+}
+static void host_sysex_in(const uint8_t *p, uint32_t n)
+{
+    memcpy(host_sx_in, p, n);
+    host_sx_in_len = n;
+    host_sx_ready = 1;
+}
+
 /* ------------------------------------------------------------ audio --- */
 static volatile uint32_t audio_cpu_q8;   /* (audio.c on the target; the host's renders cost nothing here) */
 #include "app.h"
@@ -174,10 +206,11 @@ static void host_boot(void)              /* power-on: the app's RAM is not clear
     app_init();
 }
 
-static void host_frame(void)
+static void host_frame(void)                     /* a main-loop pass: the app's SysEx, then its frame (main.c) */
 {
     host_blits = host_pixels = 0;
     fm1_ms += 16u;
+    app_sysex();
     app_frame();
 }
 

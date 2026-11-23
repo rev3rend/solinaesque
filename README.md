@@ -16,6 +16,9 @@ memory, the arp and every effect). The full description: [docs/SPEC.md](docs/SPE
 - **Playing:** HOLD, chord memory, an arpeggiator (five modes, internal tempo or MIDI clock), octave shift.
 - **Sounds:** 16 factory sounds, 32 named user slots; settings and chords kept over power-off.
 - **MIDI:** notes, pedal, bend, mod wheel and a CC map in over USB and TRS; the keys and the arp out over USB.
+- **Accessible:** speaks through the [fm1-reader](https://github.com/charlesvestal/fm1-reader) screen reader: connect
+  the FM-1 by USB, open <https://charlesvestal.github.io/fm1-reader/> in Chrome or Edge, and every page, knob,
+  preset and message is spoken in full words. The FM-1 stays silent on USB until a reader asks.
 
 ## Playing it
 

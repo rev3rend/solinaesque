@@ -22,6 +22,9 @@
  */
 static void app_init(void);                     /* boot: display on, input running, before the audio starts */
 static void app_frame(void);                    /* main loop, ~60 times a second (every >= 15 ms): input, LEDs, screen */
+static void app_sysex(void);                    /* main loop, before the update entry looks at SysEx: the app may take a
+                                                 * received frame of its own (ota_frame_get / ota_frame_done) and must
+                                                 * leave every other frame alone (the update protocol's) */
 static void app_audio(int32_t *out, uint32_t n);  /* audio ISR: n (CTL) stereo frames, out[2i] left, out[2i+1] right,
                                                  * Q15 (+-32767 is full scale, -6 dBFS at the codec) */
 static void app_audio_stop(void);               /* main loop: before an update or UBOOT, silence and forget notes */
