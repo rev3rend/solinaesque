@@ -15,7 +15,7 @@
 #define APP_NAME "SOLINAESQUE"
 #endif
 #ifndef APP_VERSION
-#define APP_VERSION "v0.1"       /* build.py --release X.Y */
+#define APP_VERSION "dev"        /* build.py --release X.Y: "vX.Y" (shown at power-on, told to the screen reader) */
 #endif
 #define APP_ID 0x1D39CD8Eu       /* this app's records in the store (store.c): every app its own (setup/new_project.py
                                   * drew it), so another firmware's data in the same flash reads as empty */
@@ -35,6 +35,8 @@ static void app_init(void)
     snd_init();
     vox.hold = 0;
     ui_init();
+    msg(APP_NAME " " APP_VERSION);              /* which firmware this is: on the bottom line at power-on, 3 s */
+    ui.msg_until = fm1_ms + 3000u;
     ui_draw();
 }
 

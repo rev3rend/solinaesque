@@ -27,7 +27,7 @@ enum { SR_HELLO = 1, SR_BYE = 2, SR_WHERE = 3, SR_SAY = 16 };
 #define SR_KEEP 2u
 #define SR_MAX 160u              /* characters of a SAY: (160 + 7 bytes) / 3 = 56 packets of the queue's 64 */
 #define SR_GONE_MS 5000u
-#define SR_NAME APP_NAME " 0.1"  /* the HELLO answer's name: the firmware and its version */
+#define SR_NAME APP_NAME " " APP_VERSION  /* the HELLO answer's name: the firmware and its version */
 
 static struct {
     uint8_t on;                  /* a reader is listening */

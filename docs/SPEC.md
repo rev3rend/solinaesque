@@ -53,6 +53,8 @@ the panel of a 1970s string machine. Every screen is drawn lazily (a signature p
 ### HOME
 
 - Top: the name SOLINAESQUE (large font), the preset name and number below it (e.g. `F1 CLASSIC`).
+- At power-on the bottom line shows the firmware and its version for 3 s (`SOLINAESQUE v1.0`; `dev` outside a
+  release build).
 - Middle: three vertical drawbars for 16', 8', 4' and a fourth bar for cutoff (KNOB 1..4 on HOME).
 - Bottom line: ensemble type, octave shift, trigger mode, status flags (ARP, HOLD, CHORD, MIDI clock), and a row of
   dots showing the sounding notes.
@@ -226,7 +228,7 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
 10. **Accessibility (fm1-reader) (done):** the FM-1 speaks through the fm1-reader screen reader
     (https://github.com/charlesvestal/fm1-reader, protocol version 1): USB-MIDI SysEx `F0 7D 53 52 <cmd> ... F7`;
     silent until a reader's HELLO (every 2 s; silent again 5 s after the last, or on BYE); the HELLO answer names the
-    firmware ("SOLINAESQUE 0.1", an empty words link: the device speaks in full words); SAY messages (ASCII, at most
+    firmware ("SOLINAESQUE v1.0": the name and APP_VERSION, an empty words link: the device speaks in full words); SAY messages (ASCII, at most
     160 characters here: the platform's SysEx queue holds 64 packets) with NOW for what the player caused and KEEP
     for warnings; WHERE (and the first HELLO) reads the whole screen. What is said: page changes with their four
     values, knob turns as "name value" (after 120 ms still, at least every ~500 ms while turning), presets, the

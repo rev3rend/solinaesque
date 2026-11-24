@@ -307,6 +307,10 @@ static void controls(void)
 {
     host_nor_erase();
     power_cycle();
+    host_frame();
+    check("power-on: the firmware and its version on the bottom line (SOLINAESQUE " APP_VERSION ")",
+          !strcmp(ui.msg, APP_NAME " " APP_VERSION) && ui.msg_until - fm1_ms >= 2000u);
+    host_png("build/shots/boot_version.png");
     tap(B_EDIT);
     check("LED: the page's button lit, HOME dark", host_led[panel.btn[B_EDIT]] && !host_led[panel.btn[B_HOME]]);
     {   /* the keys' LEDs show the gated notes the audio ISR publishes: render between the frames */
@@ -2047,8 +2051,11 @@ static void reader(void)
 {
     static const uint8_t BYE[] = {0x7D, 0x53, 0x52, 0x02}, WHERE[] = {0x7D, 0x53, 0x52, 0x03},
                          UPDATE[] = {0x00, 0x59, 0x11, 0x00, 0x00, 0x00, 0x00};
-    static const uint8_t ANSWER[] = {0xF0, 0x7D, 0x53, 0x52, 0x01, 0x01, 'S', 'O', 'L', 'I', 'N', 'A', 'E', 'S',
-                                     'Q', 'U', 'E', ' ', '0', '.', '1', 0x00, 0xF7};
+    uint8_t ANSWER[7u + sizeof SR_NAME];         /* F0 7D 53 52 01 01 <SR_NAME> 00 F7 */
+    memcpy(ANSWER, (const uint8_t[]){0xF0, 0x7D, 0x53, 0x52, 0x01, 0x01}, 6u);
+    memcpy(ANSWER + 6u, SR_NAME, sizeof SR_NAME - 1u);
+    ANSWER[5u + sizeof SR_NAME] = 0x00;
+    ANSWER[6u + sizeof SR_NAME] = 0xF7;
     uint32_t i, says;
     host_nor_erase();
     power_cycle();
@@ -2064,7 +2071,7 @@ static void reader(void)
     tap(B_HOME);
     rd_hello();
     host_frame();
-    check("reader: HELLO answered, byte for byte (F0 7D 53 52 01 01 SOLINAESQUE 0.1 00 F7)",
+    check("reader: HELLO answered, byte for byte (F0 7D 53 52 01 01 SOLINAESQUE <version> 00 F7)",
           host_sx_out_len >= sizeof ANSWER && !memcmp(host_sx_out, ANSWER, sizeof ANSWER) && !host_sx_ready);
     rd_frames(10);
     printf("  (HELLO, then: \"%s\" ...)\n", rd_n > 1u ? rd_text[1] : "");
