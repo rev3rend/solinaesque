@@ -188,7 +188,7 @@ to the defaults. The settings record is written on every SAVE and when the GLOBA
 - **MIDItoSpeech sidecar** (`docs/synthaccess/Solinaesque.json`, for IDM NYU's synthaccess MIDItoSpeech): what the FM-1
   sends, spoken on a computer; generated from the firmware's tables (`tools/gen_synthaccess.c`) and checked by the
   suite against every value sent. Percentages and linear ranges as numbers with units, named choices as words, the
-  exponential parameters as the raw value; no transport.
+  exponential parameters with MIDItoSpeech's floatmapexp (map [0, max, lo, hi, hi/lo]); no transport.
 - **NRPN round trip:** for 14-bit parameters with more than 128 steps (ENV AMOUNT), a value within one 1/128 unit of
   a whole step is that step, so every step sent comes back exactly.
 - **Program Change:** in, 0..15 load F1..F16 and 16..47 U01..U32 (higher: ignored); out when the panel changes the

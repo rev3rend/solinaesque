@@ -4,7 +4,8 @@
 """docs/synthaccess/Solinaesque.json (the MIDItoSpeech sidecar) against the firmware: the file is the one
 tools/gen_synthaccess.c makes now; every control the FM-1 sends has an entry; for every value it sends at every panel
 step, MIDItoSpeech's reading (its common/parser.js modes, done here the same way) says the named choices word for word,
-the percentages and linear ranges within one step of the firmware's value, and the raw value for the exponential ones.
+the percentages and linear ranges within one step of the firmware's value, the exponential ones (floatmapexp) within
+a unit of it and 1 %.
   tests/synthaccess_check.py build/host/gen_synthaccess docs/synthaccess/Solinaesque.json"""
 import json
 import math
@@ -45,6 +46,14 @@ def read(entry, v):                                # parser.js parseSpeak, for t
         return entry["enum"][idx]
     if d == "offon":
         return "off" if v == 0 else "on"
+    if d == "floatmapexp":                         # vmap with a curve: (cu^t - 1) / (cu - 1)
+        a, b, c, e, cu = entry["map"]
+        t = (v - a) / (b - a)
+        if entry.get("clamp") == "true":
+            t = min(max(t, 0.0), 1.0)
+        if cu > 0 and abs(cu - 1.0) > 1e-6:
+            t = (cu ** t - 1.0) / (cu - 1.0)
+        return c + t * (e - c)
     return v                                       # value
 
 
@@ -62,8 +71,9 @@ for line in subprocess.run([gen, "--pairs"], capture_output=True, text=True, che
     counts[mode] = counts.get(mode, 0) + 1
     if mode in ("enum", "offon"):
         ok = got == want
-    elif mode == "value":
-        ok = got == int(sent)
+    elif mode == "floatmapexp":                    # within the firmware's own rounding (one raw unit) and 1 %
+        w, unit = (float(x) for x in want.split("/"))
+        ok = abs(got - w) <= unit + 0.01 * w
     else:                                          # within one step of the firmware's value (in the entry's unit)
         lo, hi = (entry["map"][2], entry["map"][3]) if entry["data"] == "intmap" else (0, 100)
         span = entry["map"][1] if entry["data"] == "intmap" else 127
@@ -73,10 +83,10 @@ for line in subprocess.run([gen, "--pairs"], capture_output=True, text=True, che
 for b in bad[:6]:
     print("  " + b)
 print(f"  ({n} values: " + ", ".join(f"{m} {c}" for m, c in sorted(counts.items())) + ")")
-check("every value sent reads right (names exactly, numbers within a step)", not bad and n > 1500)
+check("every value sent reads right (names exactly, numbers within their step)", not bad and n > 1500)
 check("transport left out (no CC 109): MIDItoSpeech does not need it", "109" not in dev["CC"])
 check("Program Change: the 48 presets by name", len(dev["presets"]) == 48 and dev["presets"][2] == "factory 3, violins")
 check("the 14-bit ones as NRPN, hires (18)", len(dev["NRPN"]) == 18 and all(e.get("hires") == "true" for e in dev["NRPN"].values()))
-check("the exponential ones read as the raw value", all(dev["NRPN"][k]["data"] == "value" for k in ("74", "73", "75", "72", "25")))
+check("the exponential ones as floatmapexp (8)", sum(e["data"] == "floatmapexp" for sec in ("CC", "NRPN") for e in dev[sec].values()) == 8)
 print("synthaccess sidecar FAILED" if failed else "synthaccess sidecar passed")
 sys.exit(1 if failed else 0)

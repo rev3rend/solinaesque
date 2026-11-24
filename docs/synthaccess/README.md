@@ -24,7 +24,8 @@ violins".
   (`"hires": "true"`).
 - **Program Change:** the presets by name (factory 1..16, user 1..32).
 - Percentages and linear ranges read as numbers with their unit; named choices read as words; the exponential ones
-  (cutoff, attack, decay, release, the rates, delay time) read as the raw MIDI value.
+  (cutoff, attack, decay, release, the rates, delay time) use MIDItoSpeech's `floatmapexp`: `map` is
+  `[0, max, lo, hi, hi/lo]`, which reads as `lo × (hi/lo)^t`, the firmware's own curves (within its rounding).
 - No transport (PLAY, MIDI clock, start, stop): MIDItoSpeech does not need it.
 
 ## Keeping it current

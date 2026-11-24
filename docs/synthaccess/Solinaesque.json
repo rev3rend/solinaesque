@@ -32,7 +32,9 @@
       },
       "76": {
         "label": "L F O rate",
-        "data": "value"
+        "data": "floatmapexp",
+        "map": [0, 127, 0.5, 200, 400],
+        "suffix": "hertz"
       },
       "77": {
         "label": "vibrato",
@@ -151,7 +153,9 @@
       "74": {
         "label": "filter cutoff",
         "hires": "true",
-        "data": "value"
+        "data": "floatmapexp",
+        "map": [0, 16383, 20, 16000, 800],
+        "suffix": "hertz"
       },
       "71": {
         "label": "filter resonance",
@@ -180,12 +184,16 @@
       "73": {
         "label": "attack",
         "hires": "true",
-        "data": "value"
+        "data": "floatmapexp",
+        "map": [0, 16383, 1, 5000, 5000],
+        "suffix": "milliseconds"
       },
       "75": {
         "label": "decay",
         "hires": "true",
-        "data": "value"
+        "data": "floatmapexp",
+        "map": [0, 16383, 5, 5000, 1000],
+        "suffix": "milliseconds"
       },
       "70": {
         "label": "sustain",
@@ -198,7 +206,9 @@
       "72": {
         "label": "release",
         "hires": "true",
-        "data": "value"
+        "data": "floatmapexp",
+        "map": [0, 16383, 5, 10000, 2000],
+        "suffix": "milliseconds"
       },
       "93": {
         "label": "ensemble depth",
@@ -211,7 +221,9 @@
       "22": {
         "label": "ensemble rate",
         "hires": "true",
-        "data": "value"
+        "data": "floatmapexp",
+        "map": [0, 16383, 0.5, 200, 400],
+        "suffix": "hertz"
       },
       "23": {
         "label": "flanger amount",
@@ -224,12 +236,16 @@
       "24": {
         "label": "flanger rate",
         "hires": "true",
-        "data": "value"
+        "data": "floatmapexp",
+        "map": [0, 16383, 0.5, 200, 400],
+        "suffix": "hertz"
       },
       "25": {
         "label": "delay time",
         "hires": "true",
-        "data": "value"
+        "data": "floatmapexp",
+        "map": [0, 16383, 10, 1000, 100],
+        "suffix": "milliseconds"
       },
       "26": {
         "label": "delay feedback",

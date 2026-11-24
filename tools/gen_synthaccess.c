@@ -7,7 +7,8 @@
  *   intmap         other linear ranges, with their unit (env amount, tune, tempo, LFO delay; the 14-bit percentages)
  *   enumsplit      named choices (shape, modes, note values, octaves): the words the FM-1's screen reader says
  *   offon          ARP and HOLD
- *   value          the exponential ones (cutoff, attack, decay, release, the rates, delay time): the raw MIDI value
+ *   floatmapexp    the exponential ones (cutoff, attack, decay, release, the rates, delay time): map [0, max, lo, hi,
+ *                  hi / lo], which MIDItoSpeech reads as lo x (hi / lo)^t: the firmware's curves exactly
  * The 14-bit filter / envelope / effect parameters are NRPN 0:<CC number> ("hires": "true", 0..16383). Program Change
  * names the presets. No transport: MIDItoSpeech does not need it (PLAY's CC 109, clock, start and stop left out).
  *   cc -O1 -Ibuild/gen -Ifirmware/src -Ifirmware/app -Itests -o build/host/gen_synthaccess tools/gen_synthaccess.c -lm
@@ -15,7 +16,23 @@
  *   build/host/gen_synthaccess --pairs   every control at every step: what the FM-1 sends, what it means */
 #include "host_platform.h"
 
-enum { M_PERCENT, M_INTMAP, M_ENUM, M_OFFON, M_VALUE };
+enum { M_PERCENT, M_INTMAP, M_ENUM, M_OFFON, M_EXP };
+
+/* the exponential kinds: their ends in the unit spoken (the firmware's pv_ms_f, rounded), and pv_ms_f's unit in it */
+static int exp_of(uint32_t kind, double *lo, double *hi, const char **unit, double *raw)
+{
+    static const struct { uint32_t kind; double lo, hi, raw; const char *unit; } E[] = {
+        {K_CUT, 20, 16000, 1, "hertz"},      {K_ATK, 1, 5000, 1, "milliseconds"}, {K_DEC, 5, 5000, 1, "milliseconds"},
+        {K_REL, 5, 10000, 1, "milliseconds"}, {K_HZ, 0.5, 200, 0.01, "hertz"},    {K_DLY, 10, 1000, 1, "milliseconds"},
+    };
+    uint32_t i;
+    for (i = 0; i < sizeof E / sizeof E[0]; i++)
+        if (E[i].kind == kind) {
+            *lo = E[i].lo, *hi = E[i].hi, *unit = E[i].unit, *raw = E[i].raw;
+            return 1;
+        }
+    return 0;
+}
 
 static void put_str(const char *s)               /* a JSON string (the words are ASCII, no quotes or backslashes) */
 {
@@ -58,7 +75,7 @@ static int mode_of(uint32_t t, const param_t *p, int32_t *lo, int32_t *hi, const
     case K_BIP: *unit = "percent"; return M_INTMAP;
     case K_TUNE: *unit = "cents"; return M_INTMAP;
     case K_MS: *lo = p->lo * 40, *hi = p->hi * 40, *unit = "milliseconds"; return M_INTMAP;
-    case K_HZ: case K_ATK: case K_DEC: case K_REL: case K_CUT: case K_DLY: return M_VALUE;
+    case K_HZ: case K_ATK: case K_DEC: case K_REL: case K_CUT: case K_DLY: return M_EXP;
     }
     return M_ENUM;                               /* the named kinds */
 }
@@ -138,7 +155,13 @@ static void entry(const char *key, uint32_t t, uint32_t k, int hr, int last)
     switch (m) {
     case M_PERCENT: printf(",\n        \"data\": \"percent\""); break;
     case M_OFFON: printf(",\n        \"data\": \"offon\""); break;
-    case M_VALUE: printf(",\n        \"data\": \"value\""); break;
+    case M_EXP: {
+        double elo, ehi, raw;
+        exp_of(p->kind, &elo, &ehi, &unit, &raw);
+        printf(",\n        \"data\": \"floatmapexp\",\n        \"map\": [0, %u, %g, %g, %g],\n        \"suffix\": \"%s\"",
+               hr ? 16383u : 127u, elo, ehi, ehi / elo, unit);
+        break;
+    }
     case M_INTMAP:
         printf(",\n        \"data\": \"intmap\",\n        \"map\": [0, %u, %d, %d],\n        \"clamp\": \"true\"",
                hr ? 16383u : 127u, lo, hi);
@@ -172,10 +195,10 @@ static void entry(const char *key, uint32_t t, uint32_t k, int hr, int last)
 }
 
 /* --pairs: every control at every step: "CC|NRPN <key> <sent> <mode> <what the firmware means>": words for the named
- * ones, the number in the entry's unit for percent / intmap, the words for value (the check only needs the raw value) */
+ * ones, the number in the entry's unit for percent / intmap, "<value>/<one raw unit>" in the unit spoken for floatmapexp */
 static void pairs(void)
 {
-    static const char *const MODE[5] = {"percent", "intmap", "enum", "offon", "value"};
+    static const char *const MODE[5] = {"percent", "intmap", "enum", "offon", "floatmapexp"};
     uint32_t k, h;
     char w[48];
     for (k = 0; k < NCC; k++) {
@@ -207,9 +230,13 @@ static void pairs(void)
             *val = (int8_t)x;
             sent = cc_get(k);
             *val = keep;
-            if (m == M_ENUM || m == M_VALUE) {
+            if (m == M_ENUM) {
                 words_of(w, t, k, (uint32_t)sent);
                 printf("CC %u %d %s %s\n", CC_NUM[k], sent, MODE[m], w);
+            } else if (m == M_EXP) {
+                double elo, ehi, raw;
+                exp_of(p->kind, &elo, &ehi, &unit, &raw);
+                printf("CC %u %d %s %.4f/%.4f\n", CC_NUM[k], sent, MODE[m], pv_ms_f(p->kind, x, 0) * raw, raw);
             } else
                 printf("CC %u %d %s %d\n", CC_NUM[k], sent, MODE[m], p->kind == K_MS ? x * 40 : x);
         }
@@ -222,7 +249,12 @@ static void pairs(void)
         for (x = SP[i].lo; x <= SP[i].hi; x++) {
             int8_t keep = cur.p[i];
             cur.p[i] = (int8_t)x, cur.f[i] = 0;
-            printf("NRPN %u %u %s %d\n", CC_NUM_OF(i), hr_get(h), MODE[m], x);
+            if (m == M_EXP) {
+                double elo, ehi, raw;
+                exp_of(SP[i].kind, &elo, &ehi, &unit, &raw);
+                printf("NRPN %u %u %s %.4f/%.4f\n", CC_NUM_OF(i), hr_get(h), MODE[m], pv_ms_f(SP[i].kind, x, 0) * raw, raw);
+            } else
+                printf("NRPN %u %u %s %d\n", CC_NUM_OF(i), hr_get(h), MODE[m], x);
             cur.p[i] = keep;
         }
     }
