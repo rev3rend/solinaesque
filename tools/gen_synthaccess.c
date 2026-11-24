@@ -8,7 +8,8 @@
  *   enumsplit      named choices (shape, modes, note values, octaves): the words the FM-1's screen reader says
  *   offon          ARP and HOLD
  *   floatmapexp    the exponential ones (cutoff, attack, decay, release, the rates, delay time): map [0, max, lo, hi,
- *                  hi / lo], which MIDItoSpeech reads as lo x (hi / lo)^t: the firmware's curves exactly
+ *                  hi / lo], which MIDItoSpeech reads as lo x (hi / lo)^t: the firmware's curves exactly; "precision"
+ *                  (decimals spoken): 0 for milliseconds and the cutoff, 1 for the rates
  * The 14-bit filter / envelope / effect parameters are NRPN 0:<CC number> ("hires": "true", 0..16383). Program Change
  * names the presets. No transport: MIDItoSpeech does not need it (PLAY's CC 109, clock, start and stop left out).
  *   cc -O1 -Ibuild/gen -Ifirmware/src -Ifirmware/app -Itests -o build/host/gen_synthaccess tools/gen_synthaccess.c -lm
@@ -158,8 +159,9 @@ static void entry(const char *key, uint32_t t, uint32_t k, int hr, int last)
     case M_EXP: {
         double elo, ehi, raw;
         exp_of(p->kind, &elo, &ehi, &unit, &raw);
-        printf(",\n        \"data\": \"floatmapexp\",\n        \"map\": [0, %u, %g, %g, %g],\n        \"suffix\": \"%s\"",
-               hr ? 16383u : 127u, elo, ehi, ehi / elo, unit);
+        printf(",\n        \"data\": \"floatmapexp\",\n        \"map\": [0, %u, %g, %g, %g],\n        \"suffix\": \"%s\",\n"
+               "        \"precision\": %d",
+               hr ? 16383u : 127u, elo, ehi, ehi / elo, unit, p->kind == K_HZ);
         break;
     }
     case M_INTMAP:

@@ -26,6 +26,7 @@ violins".
 - Percentages and linear ranges read as numbers with their unit; named choices read as words; the exponential ones
   (cutoff, attack, decay, release, the rates, delay time) use MIDItoSpeech's `floatmapexp`: `map` is
   `[0, max, lo, hi, hi/lo]`, which reads as `lo × (hi/lo)^t`, the firmware's own curves (within its rounding).
+  They speak whole milliseconds and hertz (`"precision": 0`), and the rates with one decimal.
 - No transport (PLAY, MIDI clock, start, stop): MIDItoSpeech does not need it.
 
 ## Keeping it current

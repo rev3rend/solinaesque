@@ -53,7 +53,7 @@ def read(entry, v):                                # parser.js parseSpeak, for t
             t = min(max(t, 0.0), 1.0)
         if cu > 0 and abs(cu - 1.0) > 1e-6:
             t = (cu ** t - 1.0) / (cu - 1.0)
-        return c + t * (e - c)
+        return round(c + t * (e - c), entry.get("precision", 2))   # toFixed(precision)
     return v                                       # value
 
 
@@ -73,7 +73,7 @@ for line in subprocess.run([gen, "--pairs"], capture_output=True, text=True, che
         ok = got == want
     elif mode == "floatmapexp":                    # within the firmware's own rounding (one raw unit) and 1 %
         w, unit = (float(x) for x in want.split("/"))
-        ok = abs(got - w) <= unit + 0.01 * w
+        ok = abs(got - w) <= unit + 0.01 * w + 0.5 * 10 ** -entry.get("precision", 2)   # (and the decimals spoken)
     else:                                          # within one step of the firmware's value (in the entry's unit)
         lo, hi = (entry["map"][2], entry["map"][3]) if entry["data"] == "intmap" else (0, 100)
         span = entry["map"][1] if entry["data"] == "intmap" else 127
