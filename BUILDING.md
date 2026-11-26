@@ -78,6 +78,9 @@ sh web/emu/build.sh
 python3 -m http.server -d build/emu 8000     # open http://localhost:8000/
 ```
 
+The public emulator (linked from README.md) is a release's: `EMU_VERSION=v1.0 sh web/emu/build.sh` stamps the
+version, then `build/emu/` (index.html, emu.wasm, worklet.js) is published as it is.
+
 ## Install
 
 Only when everything above is green, and with recovery in mind (README.md, "Safety"). From the command line:

@@ -2,9 +2,12 @@
 
 A paraphonic divide-down string machine with 16'/8'/4' registers, a shared filter and envelope, ensemble chorus, flanger, delay, arpeggiator and chord memory.
 
-Custom firmware for the **M-VAVE FM-1** pocket synthesizer, version 0.1. Every feature of the spec is built,
+Custom firmware for the **M-VAVE FM-1** pocket synthesizer, version 1.0 ([release](https://github.com/rev3rend/solinaesque/releases/tag/v1.0)). Every feature of the spec is built,
 tested on the host and in the browser emulator, and running on a real FM-1 (peak audio load ~45 % with chord
 memory, the arp and every effect). The full description: [docs/SPEC.md](docs/SPEC.md).
+
+**Try it in your browser:** [the Solinaesque emulator](https://claude.ai/artifact/WCVpiLY9EdZ8CQbnQFZoNs): press
+*Switch on*, then play the keys (or your computer keyboard: <kbd>Z</kbd>–<kbd>/</kbd> and <kbd>Q</kbd>–<kbd>P</kbd>).
 
 ## What it does
 

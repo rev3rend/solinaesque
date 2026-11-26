@@ -12,6 +12,10 @@ cd "$(dirname "$0")/../.."
 command -v emcc >/dev/null 2>&1 || { echo "emu: no emcc (Emscripten: . ~/emsdk/emsdk_env.sh)"; exit 1; }
 NAME=$(sed -n 's/^#define APP_NAME "\([^"]*\)".*/\1/p' firmware/app/app.c)
 VERSION=$(sed -n 's/^#define APP_VERSION "\([^"]*\)".*/\1/p' firmware/app/app.c)
+if [ -n "${EMU_VERSION:-}" ]; then              # a release's emulator: EMU_VERSION=v1.0 sh web/emu/build.sh
+    VERSION=$EMU_VERSION
+    EMU_CFLAGS="${EMU_CFLAGS:-} -DAPP_VERSION=\"$VERSION\""
+fi
 mkdir -p build/emu
 # shellcheck disable=SC2086
 emcc ${EMU_OPT:--O2} -ffp-contract=off -std=gnu99 -w ${EMU_CFLAGS:-} \
