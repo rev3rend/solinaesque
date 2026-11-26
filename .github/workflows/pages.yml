@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 R. Luke DuBois
+# The web installer on GitHub Pages (https://rev3rend.github.io/solinaesque/webapp/installer/), as Felucca's: on every
+# published release (or by hand: Actions > web installer > Run workflow) it takes the latest release's .fwsc, exactly
+# the bytes released, and builds the site with web/make_site.py (the installer, the package, M-VAVE's official V15
+# for the way back, the licences). Nothing is rebuilt here: the package is the one on the release page.
+name: web installer
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  site:
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}webapp/installer/
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: The latest release's package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --json tagName -q .tagName)
+          mkdir -p rel
+          gh release download "$tag" -p '*.fwsc' -D rel
+          ls rel/*.fwsc | head -1 > rel/pkg
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          echo "$tag: $(cat rel/pkg)"; sha256sum rel/*.fwsc
+
+      - name: Build the site
+        run: python3 web/make_site.py "$(cat rel/pkg)" "${TAG#v}" _site Solinaesque
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

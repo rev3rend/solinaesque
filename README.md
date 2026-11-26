@@ -9,6 +9,9 @@ memory, the arp and every effect). The full description: [docs/SPEC.md](docs/SPE
 **Try it in your browser:** [the Solinaesque emulator](https://claude.ai/artifact/WCVpiLY9EdZ8CQbnQFZoNs): press
 *Switch on*, then play the keys (or your computer keyboard: <kbd>Z</kbd>–<kbd>/</kbd> and <kbd>Q</kbd>–<kbd>P</kbd>).
 
+**Install it on your FM-1:** [the web installer](https://rev3rend.github.io/solinaesque/webapp/installer/) (Chrome or
+Edge, the FM-1 on a USB data cable) puts the latest release on it, and can return it to M-VAVE's official firmware.
+
 ## What it does
 
 - **Divide-down strings:** 12 phase-locked top oscillators divided down to every note, so any number of keys sound;
